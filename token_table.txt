@@ -1,0 +1,26 @@
+SEMI        ;
+LPAR        (
+RPAR        )
+LBRACE      {
+RBRACE      }    #_example_trailing_comment
+# example comment at start of line
+	# example comment in the middle of the line
+ASSIGN      =
+LT          <
+GT          >
+
+EQ          ==
+NEQ         !=
+
+PLUS        +
+MINUS       -
+MULT        *
+DIV         /
+MOD         %
+
+IF          if
+
+INT         int
+RETURN      return 
+
+EOF  # example comment that stops parse
