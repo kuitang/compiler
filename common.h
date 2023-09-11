@@ -1,6 +1,7 @@
 #pragma once
 #include <setjmp.h>
-#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 // Generic helpers
 // Exceptions (there can be only one exception handler)
@@ -43,6 +44,16 @@ static jmp_buf global_exception_handler;
   longjmp(global_exception_handler, 1); \
 } while (0)
 #define THROW_IF(cond, kind_, msg) if (cond) THROW(kind_, msg)
+
+// die if no exception handler
+extern int errno;
+#define DIE_IF(cond, msg) do { \
+  if (cond) { \
+    fprintf(stderr, "Fatal error at %s:%d: %s: ", __FILE__, __LINE__, msg); \
+    if (errno) perror(""); \
+    exit(1); \
+  } \
+} while (0)
 
 // Debugging
 #define DEBUG_PRINT_EXPR(format, expr) fprintf(stderr, "DEBUG %s:%d: " #expr "=" format "\n", __FILE__, __LINE__, (expr))

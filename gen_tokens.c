@@ -1,16 +1,63 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <ctype.h>
-#include <sysexits.h>
+// TODO: Evolve the whole thing to gen_lexer.c
+// damn it do you have to read a lexer book...
+/* 
+*/
+/* idea of lexer
+i.e. it will 2 layers with lookahead.
+try to write one manually first, then autogenerate with this.
+i.e. distinguish between
+
+// TODO: Remove name
+
+=
+==
+<
+<=
+>
+>=
+
+i.e.
+may as well handwrite..., but not hardcode.
+
+NOTE: two-letter operators only have one successor!
+
+to think of: are there 
+
+successors[ASSIGN] = { .ch = '=', .kind = TOK_EQ };
+
+while True:
+  while ((ch := getc()) is space):
+    pass
+
+  if is_letter(ch):
+    ungetc(ch)
+    word = scan_word()
+    if word in keywords:
+      yield Keyword(word)
+    else:
+      yield Identifier(word)
+  else:
+    ch_kind = symbol_to_kind(ch)
+    if ch_kind == NULL:
+      raise Exception()
+    next_ch = getc()
+    succ = successor[ch_kind];
+    if next_ch = succ.ch:
+      yield successor[succ.kind]
+    # else
+    yield ch_kind
+
+https://www.reddit.com/r/Compilers/comments/z6qe98/best_approach_for_writing_a_lexer/
+*/
 #include <assert.h>
 #include <string.h>
-#include <setjmp.h>
+#include <ctype.h>
 #include "common.h"
 
 typedef struct {
-  int id;
   const char *name;
   const char *literal;
+  size_t literal_len;
 } TokenDef;
 
 typedef enum {
@@ -68,7 +115,6 @@ void init_scanner_cont(ScannerCont *scont, FILE *in, char *buf, size_t buf_len) 
   scont->line = 1;
   scont->col = 1;
 }
-
 
 Token consume_next_token(ScannerCont *scont) {
   typedef enum {
@@ -169,7 +215,6 @@ typedef struct {
 } ParseResult;
 
 typedef struct {
-  int id;
   ParseResult *result;
   int get_last_token_again;
   Token last_token;
@@ -177,7 +222,6 @@ typedef struct {
 } ParserCont;
 
 void init_parser_cont(ParserCont *pcont, ParseResult *result, FILE *in, char *buf, size_t buf_len) {
-  pcont->id = 0;
   pcont->result = result;
   pcont->get_last_token_again = 0;
   pcont->last_token = (Token) {.kind = TOK_INVALID};
@@ -191,7 +235,7 @@ Token get_token(ParserCont *pcont) {
     return pcont->last_token;
   }
   Token ret = consume_next_token(&pcont->scanner_cont);
-  print_token(ret);
+  // print_token(ret);
   pcont->last_token = ret;
   return ret;
 }
@@ -215,20 +259,22 @@ void parse_token_def(ParserCont *pcont) {
   Token name = get_token(pcont);
   THROW_IF(name.kind != TOK_NAME, EXC_PARSE_SYNTAX, "Expected to parse TOK_NAME");
 
-  // we parsed a token_def; it certainly has a name and we create a new id.
-  pcont->id++;
-  APPEND_VECTOR(
-    pcont->result->token_defs,
-    ((TokenDef) {.id = pcont->id, .name = safe_copy_word(name.value)})
-  );
-
+  char *name_str = safe_copy_word("TOK_");
+  strlcat(name_str, name.value, MAX_WORD_SIZE);
+  TokenDef token_def = {
+    .name = name_str,
+    .literal = 0,
+    .literal_len = 0
+  };
   // optional literal
   Token maybe_literal = get_token(pcont);
   if (maybe_literal.kind == TOK_LITERAL) {
-    VECTOR_LAST(pcont->result->token_defs).literal = safe_copy_word(maybe_literal.value);
+    token_def.literal = safe_copy_word(maybe_literal.value);
+    token_def.literal_len = strnlen(token_def.literal, MAX_WORD_SIZE);
   } else {
     unget_token(pcont);
   }
+  APPEND_VECTOR(pcont->result->token_defs, token_def);
 }
 
 #define MAX_LINE_SIZE 1024
@@ -339,25 +385,158 @@ void parse_start(FILE *in, ParseResult *results) {
   }
 }
 
+const TokenDef *find_successor(int ix_needle, const ParseResult *result) {
+  if (result->token_defs[ix_needle].literal_len != 1) return 0;
+  char key = result->token_defs[ix_needle].literal[0];
+  if (isalpha(key)) return 0;
+  const TokenDef *candidate = result->token_defs;
+  for (int j = 0; j < result->token_defs_size; j++, candidate++) {
+    if (candidate->literal_len == 2 && candidate->literal[0] == key) {
+      return candidate;
+    }
+  }
+  return 0;
+}
+
+void print_token_def(const TokenDef def) {
+  printf(
+    "(TokenDef) {.name = %s, .literal = %s}\n",
+    def.name,
+    def.literal
+  );
+}
+
+int compare_token_def(const void *td1, const void *td2) {
+  return strncmp(((const TokenDef *) td1)->literal, ((const TokenDef *)td2)->literal, MAX_WORD_SIZE);
+}
+
+
+// TODO: replace with just a filter in the iterator
+void filter_keywords(ParseResult *out, const ParseResult *result) {
+  NEW_VECTOR(out->token_defs, sizeof(TokenDef));
+  const TokenDef *candidate = result->token_defs;
+  for (int i = 0; i < result->token_defs_size; i++, candidate++) {
+    assert(candidate->literal_len > 0);
+    if (isalpha(candidate->literal[0])) {
+      APPEND_VECTOR(out->token_defs, *candidate);
+    }
+  }
+}
+
+// TODO: Refactor out lengthy dependence on result?
+void emit_types(FILE *out, ParseResult *result) {
+  qsort(result->token_defs, result->token_defs_size, sizeof(TokenDef), compare_token_def);
+
+  fprintf(out, "#pragma once\n");
+  fprintf(out, "const int N_TOKENS = %d;\n\n", result->token_defs_size);
+
+  fprintf(out, "typedef enum {\n");
+  fprintf(out, "  TOK_INVALID = 0,\n");
+  fprintf(out, "  TOK_IDENT,\n");
+  for (int i = 0; i < result->token_defs_size; i++) {
+    fprintf(out, "  %s,\n", result->token_defs[i].name);
+  }
+  fprintf(out, "} TokenKind;\n\n");
+
+  fprintf(out, "const char *TOKEN_NAMES[] = {\n");
+  for (int i = 0; i < result->token_defs_size; i++) {
+    fprintf(out, "  \"%s\",\n", result->token_defs[i].name);
+  }
+  fprintf(out, "};\n\n");
+
+  fprintf(out, "const char *TOKEN_LITERALS[] = {\n");
+  for (int i = 0; i < result->token_defs_size; i++) {
+    fprintf(out, "  \"%s\",\n", result->token_defs[i].literal);
+  }
+  fprintf(out, "};\n\n");
+
+  fprintf(out, "typedef struct {\n");
+  fprintf(out, "  TokenKind kind;\n");
+  fprintf(out, "  const char *literal;\n");
+  fprintf(out, "} LexTableRow;\n\n");
+ 
+  // Successors
+  fprintf(out, "#define invalid_row {.kind = TOK_INVALID, .literal = \"\"}\n");
+  fprintf(out, "LexTableRow TOKEN_SUCCESSORS[] = {\n");
+  for (int i = 0; i < result->token_defs_size; i++) {
+    // TODO: Recode as bsearch
+    const TokenDef *succ = find_successor(i, result);
+    if (succ) {
+      print_token_def(result->token_defs[i]);
+      fprintf(stderr, " HAS SUCCESSOR --> ");
+      print_token_def(*succ);
+      fprintf(out, "  {.kind = %s, .literal = \"%c\"},\n", succ->name, succ->literal[1]);
+    } else {
+      fprintf(out, "  invalid_row,\n");
+    }
+  }
+  fprintf(out, "};\n\n");
+
+  fprintf(out, "const LexTableRow SINGLE_PUNCT_TOKENS[] = {\n");
+  int n_single_punct_tokens = 0;
+  for (int i = 0; i < result->token_defs_size; i++) {
+    TokenDef candidate = result->token_defs[i];
+    if (candidate.literal_len == 1) {
+      assert(ispunct(candidate.literal[0]) && "single character tokens must be punctuation");
+      n_single_punct_tokens++;
+      fprintf(out, "  {.kind = %s, .literal = \"%c\"},\n", candidate.name, candidate.literal[0]);
+    }
+  }
+  fprintf(out, "};\n");
+  fprintf(out, "const int N_SINGLE_PUNCT_TOKENS = %d;\n\n", n_single_punct_tokens);
+
+  ParseResult sorted_keywords;
+  filter_keywords(&sorted_keywords, result);
+
+  fprintf(out, "const LexTableRow SORTED_KEYWORDS_KEYS[] = {\n");
+  for (int i = 0; i < sorted_keywords.token_defs_size; i++) {
+    TokenDef candidate = sorted_keywords.token_defs[i];
+    fprintf(out, "  {.kind = %s, .literal = \"%s\"},\n", candidate.name, candidate.literal);
+  }
+  fprintf(out, "};\n");
+  fprintf(out, "const int N_KEYWORDS = %d;\n", sorted_keywords.token_defs_size);
+}
+
+void emit_all(FILE *out, ParseResult *result) {
+  if (setjmp(global_exception_handler) == 0) {
+    emit_types(out, result);
+   } else {
+    assert(global_exception.kind == EXC_SYSTEM);
+    fprintf(
+      stderr,
+      "Exception EXC_SYSTEM at %s:%d, function %s: %s: ",
+      global_exception.file,
+      global_exception.line,
+      global_exception.function,
+      global_exception.message
+    );
+    perror("");
+  }
+}
+
+/*
+typedef struct {
+  char ch;
+  TokenKind kind;
+} Successor;
+*/
+
 int main(int argc, char *argv[]) {
   if (argc < 2) {
     fprintf(stderr, "usage: gen_tokens INPUT OUTPUT\n");
     return 1;
   }
   FILE *in = fopen(argv[1], "r");
-  if (!in) {
-    perror("failed to open input file");
-    return 1;
-  }
+  FILE *out = fopen(argv[2], "w");
+  DIE_IF(!in, "failed to open input file");
+  DIE_IF(!in, "failed to open output file");
+
   ParseResult result;
   NEW_VECTOR(result.token_defs, sizeof(TokenDef));
   parse_start(in, &result);
   for (int i = 0; i < result.token_defs_size; i++) {
-    printf(
-      "(TokenDef) {.id = %d, name = %s, literal = %s}\n",
-      result.token_defs[i].id,
-      result.token_defs[i].name,
-      result.token_defs[i].literal
-    );
+    print_token_def(result.token_defs[i]);
   }
+  emit_all(out, &result);
+
 }

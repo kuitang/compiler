@@ -8,9 +8,13 @@ RBRACE      }    #_example_trailing_comment
 ASSIGN      =
 LT          <
 GT          >
-    this-is-also-an-error
+LTE         <=
+GTE         >=
+COMMA       ,
+AMPERSAND   &
 EQ          ==
 NEQ         !=
+NOT         !
 
 PLUS        +
 MINUS       -
@@ -19,7 +23,15 @@ DIV         /
 MOD         %
 
 IF          if
+ELSE		else
+SWITCH		switch
+CASE		case
+BREAK		break
+CONTINUE	continue
+RETURN      return
 
+VOID		void
 INT         int
-RETURN      return 
-EOF  # example comment that stops parse
+LONG		long
+FLOAT		float
+DOUBLE		double

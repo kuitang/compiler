@@ -6,7 +6,7 @@ all: clang_program.s clang_opt_program.s
 run: driver
 	./driver
 
-gen_tokens: gen_tokens.c
+gen_tokens: gen_tokens.c common.h
 	$(CC) $(CFLAGS) $< -o $@
 
 kuicc: kuicc.c
