@@ -9,6 +9,7 @@ typedef enum {
   EXC_UNSET = 0,
   EXC_SYSTEM,
   EXC_INTERNAL,
+  EXC_EOF,
   EXC_PARSE_SYNTAX,
   EXC_LEX_SYNTAX,
 } ExceptionKind;
@@ -17,6 +18,7 @@ const char *EXCEPTION_KIND_TO_STR[] = {
   "EXC_UNSET",
   "EXC_SYSTEM",
   "EXC_INTERNAL",
+  "EXC_EOF",
   "EXC_PARSE_SYNTAX",
   "EXC_LEX_SYNTAX",
 };
@@ -43,7 +45,19 @@ static jmp_buf global_exception_handler;
   }; \
   longjmp(global_exception_handler, 1); \
 } while (0)
-#define THROW_IF(cond, kind_, msg) if (cond) THROW(kind_, msg)
+
+#define THROW_IF(cond, kind_, ...) if (cond) THROW(kind_, #cond ": " __VA_ARGS__)
+#define PRINT_EXCEPTION() do { \
+  fprintf( \
+    stderr, \
+    "Exception %s at %s:%d, function %s: %s\n", \
+    EXCEPTION_KIND_TO_STR[global_exception.kind], \
+    global_exception.file, \
+    global_exception.line, \
+    global_exception.function, \
+    global_exception.message \
+  ); \
+} while (0)
 
 // die if no exception handler
 extern int errno;
@@ -56,7 +70,7 @@ extern int errno;
 } while (0)
 
 // Debugging
-#define DEBUG_PRINT_EXPR(format, expr) fprintf(stderr, "DEBUG %s:%d: " #expr "=" format "\n", __FILE__, __LINE__, (expr))
+#define DEBUG_PRINT_EXPR(format, ...) fprintf(stderr, "DEBUG %s in %s:%d: " #__VA_ARGS__ " = " format "\n", __FUNCTION__, __FILE__, __LINE__, __VA_ARGS__)
 #define DEBUG_PRINT(msg) fprintf(stderr, "DEBUG %s:%d: %s\n", __FILE__, __LINE__, msg)
 
 // Vectors
