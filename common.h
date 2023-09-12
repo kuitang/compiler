@@ -9,7 +9,7 @@ typedef enum {
   EXC_UNSET = 0,
   EXC_SYSTEM,
   EXC_INTERNAL,
-  EXC_EOF,
+  EXC_EOF,  // TODO: EOF must be a token, not an exception, so we can finish the parse.
   EXC_PARSE_SYNTAX,
   EXC_LEX_SYNTAX,
 } ExceptionKind;
