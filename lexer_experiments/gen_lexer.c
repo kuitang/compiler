@@ -7,9 +7,12 @@
 #include <ctype.h>
 
 #define ptr_array_len(arr) sizeof(arr) / sizeof(void *)
+#define max(x, y) (x) > (y) ? (x) : (y)
 #define fill_lens(storage) do { \
+  max_##storage##_len = -1; \
   for (int _i = 0; _i < n_##storage; _i++) { \
     storage##_len[_i] = strlen(storage[_i]); \
+    max_##storage##_len = max(storage##_len[_i], max_##storage##_len); \
   } \
 } while (0)
 static const char *punct_tokens[] = {
@@ -17,8 +20,11 @@ static const char *punct_tokens[] = {
   ">",
   "<=",
   ">=",
+  "=",
+  ";",
 };
 static const int n_punct_tokens = ptr_array_len(punct_tokens);
+static int max_punct_tokens_len = -1;
 static int punct_tokens_len[n_punct_tokens];
 
 static const char *keywords[] = {
@@ -31,6 +37,7 @@ static const char *keywords[] = {
   "inline",
 };
 static const int n_keywords = ptr_array_len(keywords);
+static int max_keywords_len = -1;
 static int keywords_len[n_keywords];
 
 static char is_punct_token[256];
@@ -67,7 +74,7 @@ char peek(ScannerCont *cont) {
 }
 
 char getch(ScannerCont *cont) {
-  THROW_IF(cont->pos == cont->size, EXC_EOF, "EOF reached");
+  THROW_IF(cont->pos == cont->size, EXC_INTERNAL, "EOF reached");
   // DEBUG_PRINT_EXPR("before %d: %c", cont->pos, cont->buf[cont->pos]);
   char ret = cont->buf[cont->pos];
   cont->pos++;
@@ -91,6 +98,20 @@ int is_ident_rest(int c) {
   return (c == '_') || isalnum(c);
 }
 
+typedef enum {
+  TOK_IDENTIFIER,
+  TOK_PUNCT,
+  TOK_KEYWORD,
+  TOK_NUMBER,
+  TOK_EOF,
+} TokenKind;
+
+typedef struct {
+  TokenKind kind;
+  const char *value;
+  int len;
+} Token;
+
 int match_keyword_or_ident(ScannerCont *cont) {
   DEBUG_PRINT_EXPR("new call %d", cont->pos);
   int i = 0;
@@ -107,50 +128,75 @@ int match_keyword_or_ident(ScannerCont *cont) {
       return -1;
     }
     // advance i such that strings[i][k] == ch
-    DEBUG_PRINT_EXPR("%d %d", i, n_keywords);
+    // DEBUG_PRINT_EXPR("%d %d", i, n_keywords);
     for(matched = 0; i < n_keywords; i++) {
       if (keywords_len[i] < k + 1) {
         continue;
       }
-      DEBUG_PRINT_EXPR("%d %c %d %c %s", k, ch, i, keywords[i][k], keywords[i]);
+      // DEBUG_PRINT_EXPR("%d %c %d %c %s", k, ch, i, keywords[i][k], keywords[i]);
       if (keywords[i][k] == ch) {
-        DEBUG_PRINT("**************** GOT HERE ******************");
+        // DEBUG_PRINT("**************** GOT HERE ******************");
         matched = 1;
         break;
       }
     }
-    DEBUG_PRINT("Next getch...");
+    // DEBUG_PRINT("Next getch...");
   }
   return -1;
 }
 
-int consume_next_token(ScannerCont *cont) {
-  DEBUG_PRINT_EXPR("%d: %c", cont->pos, cont->buf[cont->pos]);
+Token consume_next_token(ScannerCont *cont) {
   while (isspace(getch(cont)))
     ;
   ungetch(cont);
-  DEBUG_PRINT_EXPR("%d: %c", cont->pos, cont->buf[cont->pos]);
-  int old_pos = cont->pos;
-  int lc_ret = match_keyword_or_ident(cont);
-  assert(lc_ret >= -1 && lc_ret < n_keywords);
-  DEBUG_PRINT_EXPR("%d", lc_ret);
-  if (lc_ret >= 0) {
-    fprintf(stderr, "-------> parsed keyword [[ %s ]]\n", keywords[lc_ret]);
-    return 1;
+  char ch = peek(cont);
+  if (ch == '\0') {
+    return (Token) {.kind = TOK_EOF, .value = 0, .len = 0};
   }
-  ungetch(cont);
-  // we are in the middle of a word
-  while (is_ident_rest(getch(cont)))
-    ;
-  ungetch(cont);
-  // now we are at the end of the word
-  DEBUG_PRINT("got here!");
-
-  // https://embeddedartistry.com/blog/2017/07/05/printf-a-limited-number-of-characters-from-a-string/
-  // printf("Here are the first 5 characters: %.*s\n", 5, mystr); //5 here refers to # of characters
-  int span_len = cont->pos - old_pos;
-  fprintf(stderr, "<________ the string spanning %d:%d was \"%.*s\"\n", old_pos, cont->pos, cont->pos - old_pos, cont->buf + old_pos);
-  return 2;
+  if (is_punct_token[ch]) {
+    char *buf = malloc(3);
+    buf[0] = ch;
+    getch(cont);
+    char next_ch = peek(cont);
+    if (next_ch == punct_successor[ch]) {
+      getch(cont);
+      // fuck memory
+      buf[1] = next_ch;
+      buf[2] = '\0';
+      return (Token) {.kind = TOK_PUNCT, .value = buf, .len = 1};
+    }
+    buf[1] = '\0';
+    return (Token) {.kind = TOK_PUNCT, .value = buf, .len = 2};
+  }
+  if (is_ident_start(ch)) {
+    // identifier_or_keyword
+    int start_pos = cont->pos;
+    int lc_ret = match_keyword_or_ident(cont);
+    if (lc_ret >= 0) {
+      // found keyword
+      return (Token) {.kind = TOK_KEYWORD, .value = keywords[lc_ret], .len = keywords_len[lc_ret]};
+    }
+    // else we are in the middle of a word
+    ungetch(cont);
+    // we are in the middle of a word
+    while (is_ident_rest(getch(cont)))
+      ;
+    ungetch(cont);
+    int span_len = cont->pos - start_pos;
+    return (Token) {.kind = TOK_IDENTIFIER, .value = cont->buf + start_pos, .len = span_len};
+  }
+  if (isdigit(ch)) {
+    int start_pos = cont->pos;
+    while (isdigit(getch(cont)))
+      ;
+    ungetch(cont);
+    int span_len = cont->pos - start_pos;
+    return (Token) {.kind = TOK_NUMBER, .value = cont->buf + start_pos, .len = span_len};
+  }
+  char *msg = malloc(1000);
+  snprintf(msg, 1000, "Invalid character %c at position %d", ch, cont->pos);
+  THROW(EXC_LEX_SYNTAX, msg);
+  assert(0 && "Unreachable state!");
 }
 
 void parse_start(FILE *in) {
@@ -166,15 +212,13 @@ void parse_start(FILE *in) {
     THROW_IF(fseek(in, 0, SEEK_SET) == -1, EXC_SYSTEM);
     THROW_IF(fread((char *) cont.buf, 1, cont.size, in) < cont.size, EXC_SYSTEM);
     while (1) {
-      int ret = consume_next_token(&cont);
-      DEBUG_PRINT_EXPR("ret = %d, cont.pos = %d", ret, cont.pos);
+      Token tok = consume_next_token(&cont);
+      if (tok.kind == TOK_EOF) {
+        break;
+      }
+      printf("PARSED TOKEN kind=%d, value=%.*s\n", tok.kind, tok.len, tok.value);
     }
   } else {
-    if (global_exception.kind == EXC_EOF) {
-      fprintf(stderr, "Reached EOF\n");
-      return;
-    }
-
     PRINT_EXCEPTION();
     exit(1);
   }
