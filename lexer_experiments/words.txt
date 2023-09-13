@@ -1,0 +1,12 @@
+some text
+register int
+registration
+interesting
+int
+restricted i identifier
+i_len
+0
+1234
+int x = 432423;
+i
+padding

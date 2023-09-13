@@ -1,0 +1,9 @@
+*.gch
+*.s
+*.DS_Store
+*dSYM*
+*.dSYM/
+a.out
+bin/
+out/
+trial/
