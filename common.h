@@ -75,6 +75,11 @@ extern int errno;
 // Generic vector interface: assume storage, storage ## _size, storage ## _capacity identifiers exist.
 // Hence no need to typedef each usage.
 #define VECTOR_INITIAL_CAPACITY 1024
+#define DECLARE_VECTOR(type, storage) \
+  type *storage; \
+  int storage##_size; \
+  int storage##_capacity;
+
 #define NEW_VECTOR(storage, element_size) \
   do { \
     storage = malloc((element_size) * VECTOR_INITIAL_CAPACITY); \
@@ -93,6 +98,9 @@ extern int errno;
     storage[(storage ## _size)++] = (value); \
   } while (0)
 #define VECTOR_LAST(storage) storage[(storage ## _size) - 1]
+#define VECTOR_SIZE(storage) storage ## _size
+#define POP_VECTOR(storage) storage[(storage ## _size)--]
+#define POP_VECTOR_VOID(storage) (storage ## _size)--
 
 // Basic utilities
 #define MIN(x, y) (x) < (y) ? (x) : (y)

@@ -1,0 +1,3 @@
+[submodule "vendor/klib"]
+	path = vendor/klib
+	url = https://github.com/attractivechaos/klib.git
