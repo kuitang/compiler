@@ -13,26 +13,6 @@ typedef enum {
   EXC_LEX_SYNTAX,
 } ExceptionKind;
 
-const char *EXCEPTION_KIND_TO_STR[] = {
-  "EXC_UNSET",
-  "EXC_SYSTEM",
-  "EXC_INTERNAL",
-  "EXC_PARSE_SYNTAX",
-  "EXC_LEX_SYNTAX",
-};
-
-typedef struct {
-  ExceptionKind kind;
-  const char *message;
-  const char *function;
-  const char *file;
-  int line;
-} Exception;
-
-// there can be only one exception
-static Exception global_exception;
-static jmp_buf global_exception_handler;
-
 #define THROW(kind_, message_) do { \
   global_exception = (Exception) { \
     .kind = kind_, \
@@ -105,4 +85,16 @@ extern int errno;
 // Basic utilities
 #define MIN(x, y) (x) < (y) ? (x) : (y)
 #define MAX(x, y) (x) > (y) ? (x) : (y)
+
+typedef struct {
+  ExceptionKind kind;
+  const char *message;
+  const char *function;
+  const char *file;
+  int line;
+} Exception;
+
+extern const char *EXCEPTION_KIND_TO_STR[];
+extern Exception global_exception;
+extern jmp_buf global_exception_handler;
 

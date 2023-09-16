@@ -3,12 +3,23 @@ CC = clang
 CFLAGS = -O0 -g -std=c11 -Wall -Werror -Wpedantic -fsanitize=address,undefined -fno-omit-frame-pointer
 # all: clang_program.s clang_opt_program.s
 
-golden/prog1_trace.txt: lexer golden/prog1.c
-	./lexer golden/prog1.c > golden/prog1_trace.txt
-	git --no-pager diff --color-words golden/prog1_trace.txt
+all: golden/prog1_trace.txt golden/prog2_abstract_code.txt
 
-lexer: gen_lexer.c tokens.h common.h
-	$(CC) $(CFLAGS) $< -o $@
+golden/prog2_abstract_code.txt: parser_driver golden/prog2.c
+	./parser_driver golden/prog2.c > $@
+	git --no-pager diff --color-words $@
+
+golden/prog1_trace.txt: lexer_driver golden/prog1.c
+	./lexer_driver golden/prog1.c > $@
+	git --no-pager diff --color-words $@
+
+parser_driver: parser_driver.c lexer.o common.o
+
+lexer_driver: lexer_driver.c lexer.o common.o
+
+lexer.o: lexer.c common.h
+
+common.o: common.c common.h
 
 # gen_tokens: gen_tokens.c common.h
 # 	$(CC) $(CFLAGS) $< -o $@
@@ -34,5 +45,5 @@ lexer: gen_lexer.c tokens.h common.h
 
 .PHONY: clean run
 clean:
-	rm -f *.s *.o driver lexer kuicc a.out
+	rm -f *.s *.o *driver kuicc a.out
 

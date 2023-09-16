@@ -1,4 +1,4 @@
-#include "tokens.h"
+#include "lexer.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -6,10 +6,24 @@
 #include <assert.h>
 #include <ctype.h>
 
-#include "vendor/klib/khash.h"
 #include "common.h"
 
-#define ptr_array_len(arr) sizeof(arr) / sizeof(void *)
+const char *TOKEN_NAMES[] = {
+  other_tokens_(tok_string_line_)
+  "TOK_SEPARATOR_KEYWORDS",
+  keywords_(tok_string_line_)
+  "TOK_SEPARATOR_PUNCT",
+  puncts_(tok_string_line1_)
+};
+
+const char *KEYWORD_VALUES[] = {
+  keywords_(raw_string_line_)
+};
+
+const char *PUNCT_VALUES[] = {
+  puncts_(id_string_line_0_)
+};
+
 #define max(x, y) (x) > (y) ? (x) : (y)
 #define fill_lens(storage) do { \
   max_##storage##_len = -1; \
@@ -18,23 +32,18 @@
     max_##storage##_len = max(storage##_len[_i], max_##storage##_len); \
   } \
 } while (0)
-static int max_PUNCT_VALUES_len = -1;
 static int PUNCT_VALUES_len[N_PUNCTS];
-
-static int max_KEYWORD_VALUES_len = -1;
 static int KEYWORD_VALUES_len[N_KEYWORDS];
+static int max_PUNCT_VALUES_len = -1;
+static int max_KEYWORD_VALUES_len = -1;
 
-typedef struct {
-  char c;
-} Symbol;
-KHASH_MAP_INIT_STR(symtab, Symbol *)
-
-// TODO: Support more types of literals later... I hate the non-generic part of all this
-KHASH_MAP_INIT_STR(string, int)
-typedef struct {
-  DECLARE_VECTOR(const char *, string_val)
-  khash_t(string) *string_id;
-} StringPool;
+void init_lexer_module() {
+  #define n_PUNCT_VALUES N_PUNCTS
+  fill_lens(PUNCT_VALUES);
+  // hack
+  #define n_KEYWORD_VALUES N_KEYWORDS
+  fill_lens(KEYWORD_VALUES);
+}
 
 StringPool *new_string_pool() {
   StringPool *ret = malloc(sizeof(StringPool));
@@ -49,22 +58,6 @@ void fprint_string_pool(FILE *f, StringPool *pool) {
     fprintf(f, "  %d: %s\n", i, pool->string_val[i]);
   }
 }
-
-typedef struct {
-  // static
-  const char *filename;
-  const char *buf;
-  int size;
-  // dynamic
-  int pos;
-  int line;
-  int col;
-  // saved at the start of a parse
-  int saved_pos;
-  int saved_line;
-  int saved_col;
-  StringPool *constant_pool;
-} ScannerCont;
 
 ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *constant_pool) {
   ScannerCont cont = {
@@ -109,15 +102,15 @@ ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *consta
 
 DEFINE_INTERN_GENERIC(string, char *)
 
-char peek(ScannerCont *cont) {
+static char peek(ScannerCont *cont) {
   return cont->buf[cont->pos];
 }
 
-char peek2(ScannerCont *cont) {
+static char peek2(ScannerCont *cont) {
   return cont->buf[cont->pos + 1];
 }
 
-char getch(ScannerCont *cont) {
+static char getch(ScannerCont *cont) {
   char ret = cont->buf[cont->pos++];
   if (ret == '\n') {
     cont->line++;
@@ -128,49 +121,20 @@ char getch(ScannerCont *cont) {
   return ret;
 }
 
-void save_pos(ScannerCont *cont) {
+static void save_pos(ScannerCont *cont) {
   cont->saved_pos = cont->pos;
   cont->saved_line = cont->line;
   cont->saved_col = cont->col;
 }
 
-/** @brief <think about how to destribute the continuation>
- *  @param ch The character you just scanned.
- *  @param cont Continuation used to call this function again with the next character. Each call will narrow the range
- *    ix_begin:ix_end and increment j by 1.
- *  @return -2 if the string built up in ch since the beginning continuation was not found, -1 if you need to call me
-      again, or >= 0 if found and value is the index of cont->haystack->strings we found.
- */
-
-int is_ident_start(int c) {
+static int is_ident_start(int c) {
   return (c == '_') || isalpha(c);
 }
-int is_ident_rest(int c) {
+static int is_ident_rest(int c) {
   return (c == '_') || isalnum(c);
 }
 
-typedef enum {
-  CONST_STRING,
-  CONST_INTEGER,
-  CONST_FLOAT,
-} ConstantKind;
-
-typedef struct {
-  TokenKind kind;
-  int string_id;
-  union {
-    int64_t int64_val;
-    double double_val;
-  } constant_val;
-  // debugging
-  const char *filename;
-  int line_start;
-  int line_end;
-  int col_start;
-  int col_end;
-} Token;
-
-Token make_partial_token(const ScannerCont *cont, TokenKind kind) {
+static Token make_partial_token(const ScannerCont *cont, TokenKind kind) {
   return (Token) {
     .kind = kind,
     .filename = cont->filename,
@@ -181,7 +145,7 @@ Token make_partial_token(const ScannerCont *cont, TokenKind kind) {
   };
 }
 
-int match_longest_prefix(ScannerCont *cont, const char **values, const int *lens, int n_values) {
+static int match_longest_prefix(ScannerCont *cont, const char **values, const int *lens, int n_values) {
   int i_prev_match = -1;
   int i = 0;
   int match = 1;
@@ -207,7 +171,7 @@ int match_longest_prefix(ScannerCont *cont, const char **values, const int *lens
   assert(0 && "Unreachable!");
 }
 
-void consume_spaces(ScannerCont *cont) {
+static void consume_spaces(ScannerCont *cont) {
   assert(isspace(peek(cont)));
   while (isspace(peek(cont))) {
     getch(cont);
@@ -215,7 +179,7 @@ void consume_spaces(ScannerCont *cont) {
   assert(!isspace(peek(cont)));
 }
 
-char *parse_string_literal(ScannerCont *cont) {
+static char *parse_string_literal(ScannerCont *cont) {
   DECLARE_VECTOR(char, buf)
   NEW_VECTOR(buf, sizeof(char));
   char ch;
@@ -251,7 +215,7 @@ label_at_open_quote:
   assert(0 && "Unreachable!");
 }
 
-int is_float_but_not_int_char(char ch) {
+static int is_float_but_not_int_char(char ch) {
   return (ch == '.') || (ch == 'e') || (ch == 'E') || (ch == 'p') || (ch == 'P');
 }
 
@@ -396,66 +360,3 @@ void fprint_string_repr(FILE *out, const char *s) {
   }
 }
 
-void parse_start(FILE *in, const char *filename) {
-  StringPool *pool = new_string_pool();
-  ScannerCont cont = make_scanner_cont(in, filename, pool);
-  if (setjmp(global_exception_handler) == 0) {
-    while (1) {
-      Token tok = consume_next_token(&cont);
-      if (tok.kind == TOK_END_OF_FILE) {
-        break;
-      }
-      printf(
-        "%d\t%d\t%d\t%d\t%s\t",
-        tok.line_start + 1, tok.col_start + 1, tok.line_end + 1, tok.col_end + 1,
-        // "%s\t",
-        TOKEN_NAMES[tok.kind]
-      );
-      switch (tok.kind) {
-        case TOK_STRING_LITERAL:
-        case TOK_IDENT:
-          fprint_string_repr(stdout, pool->string_val[tok.string_id]);
-          break;
-        case TOK_INTEGER_LITERAL:
-          printf("%lld", tok.constant_val.int64_val);
-          break;
-        case TOK_FLOAT_LITERAL:
-          printf("%g", tok.constant_val.double_val);
-          break;
-        default:
-          break;
-      }
-      printf("\n");
-    }
-  } else {
-    PRINT_EXCEPTION();
-    exit(1);
-  }
-  fprint_string_pool(stdout, pool);
-}
-
-int main(int argc, char *argv[]) {
-  if (argc < 2) {
-    fprintf(stderr, "gen_lexer: no input file\n");
-    exit(1);
-  }
-  // printf("punctations:\n");
-  // for (int i = 0; i < N_PUNCTS; i++) {
-  //   printf("%8d: %s\n", i, PUNCT_VALUES[i]);
-  // }
-  // printf("keywords:\n");
-  // for (int i = 0; i < N_KEYWORDS; i++) {
-  //   printf("%8d: %s\n", i, KEYWORD_VALUES[i]);
-  // }
-  #define n_PUNCT_VALUES N_PUNCTS
-  fill_lens(PUNCT_VALUES);
-  // hack
-  #define n_KEYWORD_VALUES N_KEYWORDS
-  fill_lens(KEYWORD_VALUES);
-
-  FILE *in = fopen(argv[1], "r");
-  DIE_IF(!in, "Couldn't open input file");
-
-  parse_start(in, argv[1]);
-  return 0;
-}
