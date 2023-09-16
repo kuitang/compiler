@@ -162,6 +162,11 @@ set_size_(N_PUNCTS, PUNCT_VALUES);
 #define KEYWORD_NAME(ix) TOKEN_NAMES[KEYWORD_KIND(ix)]
 #define PUNCT_NAME(ix) TOKEN_NAMES[PUNCT_NAME(ix)]
 
+
+#define IS_KEYWORD(kind) ((kind) > TOK_SEPARATOR_KEYWORDS) && ((kind) < TOK_SEPARATOR_PUNCT)
+#define IS_PUNCT(kind) ((kind) > TOK_SEPARATOR_PUNCT)
+#define KEYWORD_KIND_STR(kind) KEYWORD_NAME()
+
 #undef keywords_
 #undef puncts_
 #undef other_tokens_

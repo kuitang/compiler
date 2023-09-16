@@ -31,41 +31,22 @@ KHASH_MAP_INIT_STR(symtab, Symbol *)
 
 // TODO: Support more types of literals later... I hate the non-generic part of all this
 KHASH_MAP_INIT_STR(string, int)
-KHASH_MAP_INIT_INT64(integer, int)
-KHASH_MAP_INIT_INT64(float, int)
 typedef struct {
   DECLARE_VECTOR(const char *, string_val)
-  DECLARE_VECTOR(int64_t, integer_val)
-  DECLARE_VECTOR(double, float_val)
   khash_t(string) *string_id;
-  khash_t(integer) *integer_id;
-  khash_t(float) *float_id;
-} ConstantPool;
+} StringPool;
 
-ConstantPool *new_constant_pool() {
-  ConstantPool *ret = malloc(sizeof(ConstantPool));
+StringPool *new_string_pool() {
+  StringPool *ret = malloc(sizeof(StringPool));
   NEW_VECTOR(ret->string_val, sizeof(char *));
-  NEW_VECTOR(ret->integer_val, sizeof(int64_t));
-  NEW_VECTOR(ret->float_val, sizeof(double));
   ret->string_id = kh_init_string();
-  ret->integer_id = kh_init_integer();
-  ret->float_id = kh_init_float();
   return ret;
 }
 
-void fprint_constant_pool(FILE *f, ConstantPool *pool) {
-  fprintf(f, "constant pool:\n");
-  fprintf(f, "  strings:\n");
+void fprint_string_pool(FILE *f, StringPool *pool) {
+  fprintf(f, "string pool:\n");
   for (int i = 0; i < pool->string_val_size; i++) {
-    fprintf(f, "    %d: %s\n", i, pool->string_val[i]);
-  }
-  fprintf(f, "  integers:\n");
-  for (int i = 0; i < pool->integer_val_size; i++) {
-    fprintf(f, "    %d: %lld\n", i, pool->integer_val[i]);
-  }
-  fprintf(f, "  floats:\n");
-  for (int i = 0; i < pool->float_val_size; i++) {
-    fprintf(f, "    %d: %g\n", i, pool->float_val[i]);
+    fprintf(f, "  %d: %s\n", i, pool->string_val[i]);
   }
 }
 
@@ -76,46 +57,42 @@ typedef struct {
   int size;
   // dynamic
   int pos;
-  ConstantPool *constant_pool;
-  DECLARE_VECTOR(int, newlines_pos)
+  int line;
+  int col;
+  // saved at the start of a parse
+  int saved_pos;
+  int saved_line;
+  int saved_col;
+  StringPool *constant_pool;
 } ScannerCont;
 
-ScannerCont make_scanner_cont(FILE *in, const char *filename, ConstantPool *constant_pool) {
+ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *constant_pool) {
   ScannerCont cont = {
     .filename = filename,
     .pos = 0,
+    .line = 0,
+    .col = 0,
+    .saved_pos = -1,
+    .saved_line = -1,
+    .saved_col = -1,
     .constant_pool = constant_pool,
   };
-  NEW_VECTOR(cont.newlines_pos, sizeof(int));
   DIE_IF(fseek(in, 0, SEEK_END) == -1, "seek end");
   cont.size = ftell(in);
   DIE_IF(cont.size == -1, "ftell");
-  char *buf = malloc(sizeof(cont.size) + 2);
+  char *buf = malloc(cont.size + 2);
   DIE_IF(buf == 0, "malloc failed");
   DIE_IF(fseek(in, 0, SEEK_SET) == -1, "seek begin");
   DIE_IF(fread((char *) buf, 1, cont.size, in) < cont.size, "fread did not read enough characters");
   // add another NULL byte to enable two characters of readahead; useful for detecting comments
+  buf[cont.size] = '\0';
+  buf[cont.size + 1] = '\0';
   cont.buf = buf;
   return cont;
 }
 
-// #define DEFINE_INTERN_GENERIC(name, storage_type) \
-//   int intern_##name(ConstantPool *pool, storage_type val) { \
-//     khash_t(name) *h = pool->name##_id; \
-//     khiter_t k = kh_get(name, h, val); \
-//     if (k != kh_end(h)) {  /* saw this constant before */\
-//       return kh_val(h, k); \
-//     } /* else we haven't seen the constant before */ \
-//     int ret; \
-//     k = kh_put(name, h, val, &ret); /* add the key */ \
-//     THROW_IF(ret == -1, EXC_SYSTEM, "kh_put failed"); \
-//     int id = VECTOR_SIZE(pool->name##_val); \
-//     APPEND_VECTOR(pool->name##_val, val); \
-//     kh_val(h, k) = id; \
-//     return id; \
-//   }
 #define DEFINE_INTERN_GENERIC(name, storage_type) \
-  int intern_##name(ConstantPool *pool, storage_type val) { \
+  int intern_##name(StringPool *pool, storage_type val) { \
     khash_t(name) *h = pool->name##_id; \
     khiter_t k = kh_get(name, h, val); \
     if (k != kh_end(h)) {  /* saw this constant before */\
@@ -131,8 +108,6 @@ ScannerCont make_scanner_cont(FILE *in, const char *filename, ConstantPool *cons
   }
 
 DEFINE_INTERN_GENERIC(string, char *)
-DEFINE_INTERN_GENERIC(integer, int64_t)
-DEFINE_INTERN_GENERIC(float, double)
 
 char peek(ScannerCont *cont) {
   return cont->buf[cont->pos];
@@ -142,48 +117,21 @@ char peek2(ScannerCont *cont) {
   return cont->buf[cont->pos + 1];
 }
 
-int curr_line(const ScannerCont *cont) {
-  return VECTOR_SIZE(cont->newlines_pos) + 1;
-}
-
-// const char *curr_ptr(const ScannerCont *cont) {
-//   return cont->buf + cont->pos;
-// }
-
-int curr_col(const ScannerCont *cont) {
-  int last_newline = VECTOR_SIZE(cont->newlines_pos) == 0 ? -1 : VECTOR_LAST(cont->newlines_pos);
-  return cont->pos - last_newline;
-}
-
-// see https://www.cs.cmu.edu/~410/doc/doxygen.html#introduction
-/** @brief Decrement position in buffer so we can get the last character again.
- *  @param cont Continuation of next_longest_prefix
- *  @return void
- */
-// TODO: Handle multiple newlines...
-void ungetch(ScannerCont *cont) {
-  assert(cont->pos > 0 && "Haven't consumed anything yet; can't unget");
-  if (peek(cont) == '\n') {
-    assert(VECTOR_SIZE(cont->newlines_pos) > 0);
-    POP_VECTOR_VOID(cont->newlines_pos);
-  }
-  cont->pos--;
-  // DEBUG_PRINT_EXPR("%d:%d, last_newline = %d", curr_line(cont), curr_col(cont), VECTOR_LAST(cont->newlines_pos));  
-}
-
 char getch(ScannerCont *cont) {
-  char ret = cont->buf[cont->pos];
+  char ret = cont->buf[cont->pos++];
   if (ret == '\n') {
-    APPEND_VECTOR(cont->newlines_pos, cont->pos);
+    cont->line++;
+    cont->col = 0;
+  } else {
+    cont->col++;
   }
-  cont->pos++;
-  // DEBUG_PRINT_EXPR("%d:%d, last_newline = %d", curr_line(cont), curr_col(cont), VECTOR_LAST(cont->newlines_pos));
   return ret;
 }
 
-void save_pos(ScannerCont *cont, int *pos, int *col) {
-  *pos = cont->pos;
-  *col = curr_col(cont);
+void save_pos(ScannerCont *cont) {
+  cont->saved_pos = cont->pos;
+  cont->saved_line = cont->line;
+  cont->saved_col = cont->col;
 }
 
 /** @brief <think about how to destribute the continuation>
@@ -204,109 +152,66 @@ int is_ident_rest(int c) {
 typedef enum {
   CONST_STRING,
   CONST_INTEGER,
-  COST_FLOAT,
+  CONST_FLOAT,
 } ConstantKind;
 
 typedef struct {
   TokenKind kind;
-  ConstantKind constant_kind;
-  int constant_id;
+  int string_id;
+  union {
+    int64_t int64_val;
+    double double_val;
+  } constant_val;
   // debugging
   const char *filename;
-  int line;
+  int line_start;
+  int line_end;
   int col_start;
   int col_end;
 } Token;
 
-Token make_partial_token(const ScannerCont *cont, TokenKind kind, int col_start) {
+Token make_partial_token(const ScannerCont *cont, TokenKind kind) {
   return (Token) {
     .kind = kind,
-    .constant_kind = -1,
-    .constant_id = -1,
     .filename = cont->filename,
-    .line = curr_line(cont),
-    .col_start = col_start,
-    .col_end = curr_col(cont),
+    .line_start = cont->saved_line,
+    .line_end = cont->line,
+    .col_start = cont->saved_col,
+    .col_end = cont->col,
   };
 }
 
-int match_keyword_or_ident(ScannerCont *cont) {
-  // DEBUG_PRINT_EXPR("new call %d", cont->pos);
+int match_longest_prefix(ScannerCont *cont, const char **values, const int *lens, int n_values) {
+  int i_prev_match = -1;
   int i = 0;
-  int matched = 1;
-  char ch;
-  for (int k = 0; matched; k++) {
-    ch = getch(cont);
-    // DEBUG_PRINT_EXPR("%c", ch);
-    if (!is_ident_rest(ch)) {
-      if (matched && KEYWORD_VALUES_len[i] == k) {
-        ungetch(cont);
-        return i;
+  int match = 1;
+  for (int k = 0; ; k++, getch(cont)) {
+    for(match = 0; i < n_values; i++) {
+      if (lens[i] < k + 1) {
+        continue;
       }
-      ungetch(cont);
+      if (values[i][k] == peek(cont)) {
+        i_prev_match = i;
+        match = 1;
+        break;
+      }
+    }
+    if (!match) {
+      // was the previous match an EXACT match?
+      if (i_prev_match >= 0 && lens[i_prev_match] == k) {
+        return i_prev_match;
+      }
       return -1;
     }
-    // advance i such that strings[i][k] == ch
-    // DEBUG_PRINT_EXPR("%d %d", i, n_keywords);
-    for(matched = 0; i < N_KEYWORDS; i++) {
-      if (KEYWORD_VALUES_len[i] < k + 1) {
-        continue;
-      }
-      // DEBUG_PRINT_EXPR("%d %c %d %c %s", k, ch, i, keywords[i][k], keywords[i]);
-      if (KEYWORD_VALUES[i][k] == ch) {
-        // DEBUG_PRINT("**************** GOT HERE ******************");
-        matched = 1;
-        break;
-      }
-    }
-    // DEBUG_PRINT("Next getch...");
   }
-  ungetch(cont);
-  return -1;
-}
-
-// essentially a copy of above, but different exit logic
-int match_punct(ScannerCont *cont) {
-  // DEBUG_PRINT_EXPR("new call %d", cont->pos);
-  int i = 0;
-  int i_prev_match = -1;
-  int matched = 1;
-  char ch;
-  int k;
-  for (k = 0; matched; k++) {
-    ch = getch(cont);
-    // advance i such that strings[i][k] == ch
-    // DEBUG_PRINT_EXPR("%d %d", i, n_keywords);
-    for(matched = 0; i < N_PUNCTS; i++) {
-      if (PUNCT_VALUES_len[i] < k + 1) {
-        continue;
-      }
-      if (PUNCT_VALUES[i][k] == ch) {
-        // DEBUG_PRINT("**************** GOT HERE ******************");
-        // DEBUG_PRINT_EXPR("%d %c %d %c %s", k, ch, i, PUNCT_VALUES[i][k], PUNCT_VALUES[i]);
-        i_prev_match = i;
-        matched = 1;
-        break;
-      }
-    }
-    // Eventually k will be large enough that we don't match, exiting the for loop.
-  }
-  assert(!matched);
-  if (i_prev_match >= 0) {
-    // ch didn't match, but the previous k matched. Return current character and return previous match.
-    ungetch(cont);
-    // DEBUG_PRINT_EXPR("Returning... %d %c %d %c %s", k, ch, i, PUNCT_VALUES[i_prev_match][k], PUNCT_VALUES[i_prev_match]);
-    return i_prev_match;
-  }
-  ungetch(cont);
-  return -1;
+  assert(0 && "Unreachable!");
 }
 
 void consume_spaces(ScannerCont *cont) {
   assert(isspace(peek(cont)));
-  while (isspace(getch(cont)))
-    ;
-  ungetch(cont);
+  while (isspace(peek(cont))) {
+    getch(cont);
+  }
   assert(!isspace(peek(cont)));
 }
 
@@ -350,16 +255,13 @@ int is_float_but_not_int_char(char ch) {
   return (ch == '.') || (ch == 'e') || (ch == 'E') || (ch == 'p') || (ch == 'P');
 }
 
-// Anytime we return to consume_next_token, we are not in the "middle" of any token. So any helper function that reads
-// one character too many must ungetch it before returning.
 Token consume_next_token(ScannerCont *cont) {
   char ch;
   char *msg;
-  int pos_start = -1, col_start = -1;  // starting positions for the token we will return
 label_start:
   ch = peek(cont);
   if (ch == '\0') {
-    return make_partial_token(cont, TOK_END_OF_FILE, curr_col(cont));
+    return make_partial_token(cont, TOK_END_OF_FILE);
   }
   if (ch == '/' && peek2(cont) == '/') {
     while (getch(cont) != '\n')
@@ -386,25 +288,22 @@ label_start:
   }
 
   // Now the actual tokens begin
-  save_pos(cont, &pos_start, &col_start);
+  save_pos(cont);
   if (ch == '"') {
     char *s = parse_string_literal(cont);
     int id = intern_string(cont->constant_pool, s);
-    Token ret = make_partial_token(cont, TOK_STRING_LITERAL, col_start);
-    ret.constant_id = id;
-    DEBUG_PRINT_EXPR("parsed string literal %s, id = %d\n", s, id);
+    Token ret = make_partial_token(cont, TOK_STRING_LITERAL);
+    ret.string_id = id;
     return ret;
   }
-  // TOOD: distinguish doubles...
   if (
     isdigit(ch)
-    || ((ch == '+' || ch == '-') && isdigit(peek(cont)))
+    || ((ch == '+' || ch == '-') && isdigit(peek2(cont)))
   ) {
     Token ret;
-    int id;
     const char *startptr = cont->buf + cont->pos;
     char *endptr;
-    int64_t int_val = strtoll(startptr, &endptr, 0);
+    int64_t int64_val = strtoll(startptr, &endptr, 0);
     if (endptr == startptr) {
       // no digits were parsed
       goto label_throw;
@@ -416,31 +315,32 @@ label_start:
       if (endptr == startptr) {
         goto label_throw;
       }
-      id = intern_float(cont->constant_pool, double_val);
-      ret = make_partial_token(cont, TOK_FLOAT_LITERAL, col_start);
-      DEBUG_PRINT_EXPR("parsed float literal %g, id = %d\n", double_val, id);
+      int n_chars_read = endptr - startptr;
+      for (int i = 0; i < n_chars_read; i++) {
+        getch(cont);
+      }
+      ret = make_partial_token(cont, TOK_FLOAT_LITERAL);
+      ret.constant_val.double_val = double_val;
     } else {
-      id = intern_integer(cont->constant_pool, int_val);
-      ret = make_partial_token(cont, TOK_INTEGER_LITERAL, col_start);
-      DEBUG_PRINT_EXPR("parsed integer literal %lld, id = %d\n", int_val, id);
+      int n_chars_read = endptr - startptr;
+      for (int i = 0; i < n_chars_read; i++) {
+        getch(cont);
+      }
+      ret = make_partial_token(cont, TOK_INTEGER_LITERAL);
+      ret.constant_val.int64_val = int64_val;
     }
     // in either case, advance scanner
-    int n_chars_read = endptr - startptr;
-    for (int i = 0; i < n_chars_read; i++) {
-      getch(cont);
-    }
-    ret.constant_id = id;
     return ret;
   label_throw:
     THROW(EXC_LEX_SYNTAX, "Expected to parse integer or double literal but nothing was parsed");
   }
   if (ispunct(ch)) {
-    int i = match_punct(cont);
+    int i = match_longest_prefix(cont, PUNCT_VALUES, PUNCT_VALUES_len, N_PUNCTS);
     if (i >= 0) {
-      return make_partial_token(cont, PUNCT_KIND(i), col_start);
+      return make_partial_token(cont, PUNCT_KIND(i));
     }
     // if we didn't consume anything at all, then ch is punct but doesn't match and valid token. 
-    if (cont->pos == pos_start) {
+    if (cont->pos == cont->saved_pos) {
       goto label_error;
     }
     // next char could be anything
@@ -448,51 +348,79 @@ label_start:
   }
   if (is_ident_start(ch)) {
     // identifier_or_keyword
-    int i = match_keyword_or_ident(cont);
+    int i = match_longest_prefix(cont, KEYWORD_VALUES, KEYWORD_VALUES_len, N_KEYWORDS);
     if (i >= 0) {
-      return make_partial_token(cont, KEYWORD_KIND(i), col_start);
+      return make_partial_token(cont, KEYWORD_KIND(i));
     }
     // else we are in the middle of an identifier
-    while (is_ident_rest(getch(cont)))
-      ;
-    ungetch(cont);
-    int span_len = cont->pos - pos_start;
+    while (is_ident_rest(peek(cont))) {
+      getch(cont);
+    }
+    int span_len = cont->pos - cont->saved_pos;
     char *s = malloc(span_len + 1);
     THROW_IF(!s, EXC_SYSTEM, "malloc span_len failed");
-    strlcpy(s, cont->buf + pos_start, span_len + 1);
+    strlcpy(s, cont->buf + cont->saved_pos, span_len + 1);
     int id = intern_string(cont->constant_pool, s);
-    Token ret = make_partial_token(cont, TOK_IDENT, col_start);
-    ret.constant_id = id;
+    Token ret = make_partial_token(cont, TOK_IDENT);
+    ret.string_id = id;
     fprintf(stderr, "parsed identifier %s, id = %d\n", s, id);
     return ret;
   }
 label_error:
   // Syntax error if we get here
   msg = malloc(1000);
-  snprintf(msg, 1000, "Invalid character %c at position %d (line %d, col %d)", ch, cont->pos, curr_line(cont), curr_col(cont));
+  snprintf(msg, 1000, "Invalid character %c at position %d (line %d, col %d)", ch, cont->pos, cont->line, cont->col);
   THROW(EXC_LEX_SYNTAX, msg);
 }
 
+void fprint_string_repr(FILE *out, const char *s) {
+  for (; *s != '\0'; s++) {
+    switch (*s) {
+      case '\n':
+        s++;
+        putc('\\', out);
+        putc('n', out);
+        break;
+      case '\t':
+        s++;
+        putc('\\', out);
+        putc('t', out);
+      case '\v':
+        s++;
+        putc('\\', out);
+        putc('v', out);
+      default:
+        fputc(*s, out);
+        break;
+    }
+  }
+}
+
 void parse_start(FILE *in, const char *filename) {
-  ConstantPool *constant_pool = new_constant_pool();
-  ScannerCont cont = make_scanner_cont(in, filename, constant_pool);
+  StringPool *pool = new_string_pool();
+  ScannerCont cont = make_scanner_cont(in, filename, pool);
   if (setjmp(global_exception_handler) == 0) {
     while (1) {
       Token tok = consume_next_token(&cont);
       if (tok.kind == TOK_END_OF_FILE) {
         break;
       }
-      printf("PARSED TOKEN kind=%s on line %d", TOKEN_NAMES[tok.kind], tok.line);
+      printf(
+        "%d\t%d\t%d\t%d\t%s\t",
+        tok.line_start + 1, tok.col_start + 1, tok.line_end + 1, tok.col_end + 1,
+        // "%s\t",
+        TOKEN_NAMES[tok.kind]
+      );
       switch (tok.kind) {
         case TOK_STRING_LITERAL:
         case TOK_IDENT:
-          printf(", id = %d, value = %s", tok.constant_id, constant_pool->string_val[tok.constant_id]);
+          fprint_string_repr(stdout, pool->string_val[tok.string_id]);
           break;
         case TOK_INTEGER_LITERAL:
-          printf(", id = %d, value = %lld", tok.constant_id, constant_pool->integer_val[tok.constant_id]);
+          printf("%lld", tok.constant_val.int64_val);
           break;
         case TOK_FLOAT_LITERAL:
-          printf(", id = %d, value = %g", tok.constant_id, constant_pool->float_val[tok.constant_id]);
+          printf("%g", tok.constant_val.double_val);
           break;
         default:
           break;
@@ -503,7 +431,7 @@ void parse_start(FILE *in, const char *filename) {
     PRINT_EXCEPTION();
     exit(1);
   }
-  fprint_constant_pool(stdout, constant_pool);
+  fprint_string_pool(stdout, pool);
 }
 
 int main(int argc, char *argv[]) {
