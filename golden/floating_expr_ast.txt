@@ -1,0 +1,14 @@
+The final result is:
+
+TOK_DIV_OP:
+  left:
+    TOK_FLOAT_LITERAL:
+      immediate F64: 7.62
+  right:
+    TOK_FLOAT_LITERAL:
+      immediate F64: 2.99
+
+
+The state of the visitor at the end was:
+
+string pool:

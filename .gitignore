@@ -2,6 +2,8 @@
 *.s
 *.i
 *.out
+*driver
+*.o
 *.DS_Store
 *dSYM*
 *.dSYM/
@@ -10,3 +12,4 @@ a.out
 bin/
 out/
 trial/
+tmp/

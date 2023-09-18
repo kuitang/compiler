@@ -1,0 +1,10 @@
+The final result is:
+
+t3
+
+The state of the visitor at the end was:
+
+t1 = load immediate F64 $7.62
+t2 = load immediate F64 $2.99
+t3 = div t1, t2
+string pool:

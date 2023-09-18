@@ -1,0 +1,79 @@
+The final result is:
+
+TOK_COMMA:
+  left:
+    TOK_COMMA:
+      left:
+        TOK_COMMA:
+          left:
+            TOK_ADD_OP:
+              left:
+                TOK_ADD_OP:
+                  left:
+                    TOK_INTEGER_LITERAL:
+                      immediate I64: 1
+                  right:
+                    TOK_INTEGER_LITERAL:
+                      immediate I64: 2
+              right:
+                TOK_INTEGER_LITERAL:
+                  immediate I64: 3
+          right:
+            TOK_SUB_OP:
+              left:
+                TOK_DIV_OP:
+                  left:
+                    TOK_ADD_OP:
+                      left:
+                        TOK_INTEGER_LITERAL:
+                          immediate I64: 1
+                      right:
+                        TOK_INTEGER_LITERAL:
+                          immediate I64: 2
+                  right:
+                    TOK_FLOAT_LITERAL:
+                      immediate F64: 3
+              right:
+                TOK_INTEGER_LITERAL:
+                  immediate I64: 1
+      right:
+        TOK_ADD_OP:
+          left:
+            TOK_INTEGER_LITERAL:
+              immediate I64: 1
+          right:
+            TOK_DIV_OP:
+              left:
+                TOK_DIV_OP:
+                  left:
+                    TOK_INTEGER_LITERAL:
+                      immediate I64: 18
+                  right:
+                    TOK_INTEGER_LITERAL:
+                      immediate I64: 6
+              right:
+                TOK_INTEGER_LITERAL:
+                  immediate I64: 3
+  right:
+    TOK_STAR_OP:
+      left:
+        TOK_ADD_OP:
+          left:
+            TOK_INTEGER_LITERAL:
+              immediate I64: 1
+          right:
+            TOK_INTEGER_LITERAL:
+              immediate I64: 2
+      right:
+        TOK_ADD_OP:
+          left:
+            TOK_INTEGER_LITERAL:
+              immediate I64: 3
+          right:
+            TOK_INTEGER_LITERAL:
+              immediate I64: 4
+
+
+The state of the visitor at the end was:
+
+string pool:

@@ -3,23 +3,50 @@ CC = clang
 CFLAGS = -O0 -g -std=c11 -Wall -Werror -Wpedantic -fsanitize=address,undefined -fno-omit-frame-pointer
 # all: clang_program.s clang_opt_program.s
 
-all: golden/prog1_trace.txt golden/prog2_abstract_code.txt
+all: golden/prog1_trace.txt golden/prog2_parse.txt golden/one_plus_two_parse.txt golden/one_plus_two_ast.txt golden/prog2_ast.txt golden/floating_expr_ast.txt golden/floating_expr_parse.txt
 
-golden/prog2_abstract_code.txt: parser_driver golden/prog2.c
-	./parser_driver golden/prog2.c > $@
+golden/one_plus_two_parse.txt: parser_driver golden/one_plus_two.c
+	rm -f $@
+	./parser_driver -v ssa golden/one_plus_two.c 2>/dev/null > $@
+	git --no-pager diff --color-words $@
+
+golden/prog2_parse.txt: parser_driver golden/prog2.c
+	rm -f $@
+	./parser_driver -v ssa golden/prog2.c  2>/dev/null > $@
+	git --no-pager diff --color-words $@
+
+golden/one_plus_two_ast.txt: parser_driver golden/one_plus_two.c
+	rm -f $@
+	./parser_driver -v ast golden/one_plus_two.c 2>/dev/null > $@
+	git --no-pager diff --color-words $@
+
+golden/floating_expr_ast.txt: parser_driver golden/floating_expr.c
+	rm -f $@
+	./parser_driver -v ast golden/floating_expr.c 2>/dev/null > $@
+	git --no-pager diff --color-words $@
+
+golden/floating_expr_parse.txt: parser_driver golden/floating_expr.c
+	rm -f $@
+	./parser_driver -v ssa golden/floating_expr.c 2>/dev/null > $@
+	git --no-pager diff --color-words $@
+
+golden/prog2_ast.txt: parser_driver golden/prog2.c
+	rm -f $@
+	./parser_driver -v ast golden/prog2.c  2>/dev/null > $@
 	git --no-pager diff --color-words $@
 
 golden/prog1_trace.txt: lexer_driver golden/prog1.c
-	./lexer_driver golden/prog1.c > $@
+	rm -f $@
+	./lexer_driver golden/prog1.c 2>/dev/null > $@
 	git --no-pager diff --color-words $@
 
-parser_driver: parser_driver.c lexer.o common.o
+parser_driver: parser_driver.c ssa_visitor.o ast_visitor.o lexer.o common.o
 
 lexer_driver: lexer_driver.c lexer.o common.o
 
-lexer.o: lexer.c common.h
+# lexer.o: lexer.c common.h
 
-common.o: common.c common.h
+# common.o: common.c common.h
 
 # gen_tokens: gen_tokens.c common.h
 # 	$(CC) $(CFLAGS) $< -o $@
@@ -45,5 +72,5 @@ common.o: common.c common.h
 
 .PHONY: clean run
 clean:
-	rm -f *.s *.o *driver kuicc a.out
+	rm -rf *.i *.s *.o *.gch *.dSYM *driver kuicc a.out
 

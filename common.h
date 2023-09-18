@@ -1,6 +1,7 @@
 #pragma once
 #include <setjmp.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 
 // Generic helpers
@@ -11,7 +12,10 @@ typedef enum {
   EXC_INTERNAL,
   EXC_PARSE_SYNTAX,
   EXC_LEX_SYNTAX,
+  EXC_EMITTER,
 } ExceptionKind;
+
+// TODO: Refactor the whole thing later
 
 #define THROW(kind_, message_) do { \
   global_exception = (Exception) { \
@@ -23,6 +27,12 @@ typedef enum {
   }; \
   longjmp(global_exception_handler, 1); \
 } while (0)
+
+#define THROWF(kind_, format, ...) do { \
+  char *message; \
+  asprintf(&message, format, __VA_ARGS__); \
+  THROW(kind_, message); \
+} while (0);
 
 #define THROW_IF(cond, kind_, ...) if (cond) THROW(kind_, #cond ": " __VA_ARGS__)
 #define PRINT_EXCEPTION() do { \
@@ -98,3 +108,6 @@ extern const char *EXCEPTION_KIND_TO_STR[];
 extern Exception global_exception;
 extern jmp_buf global_exception_handler;
 
+void *checked_malloc(size_t size);
+void *checked_calloc(size_t count, size_t size);
+int checked_asprintf(char **ret, const char *format, ...);

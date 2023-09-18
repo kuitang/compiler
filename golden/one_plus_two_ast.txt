@@ -1,0 +1,14 @@
+The final result is:
+
+TOK_ADD_OP:
+  left:
+    TOK_INTEGER_LITERAL:
+      immediate I64: 1
+  right:
+    TOK_INTEGER_LITERAL:
+      immediate I64: 2
+
+
+The state of the visitor at the end was:
+
+string pool:

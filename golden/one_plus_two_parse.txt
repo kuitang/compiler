@@ -1,0 +1,10 @@
+The final result is:
+
+t3
+
+The state of the visitor at the end was:
+
+t1 = load immediate I64 $1
+t2 = load immediate I64 $2
+t3 = add t1, t2
+string pool:
