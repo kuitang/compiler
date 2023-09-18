@@ -1,11 +1,9 @@
 #import <stdio.h>
 
-extern int f1(int);
+extern long long f();
 
-#define print_expr(expr) printf(#expr " = %d\n", (expr))
+#define print_expr(expr) printf(#expr " = %lld\n", (expr))
 
 int main(int argc, char *argv[]) {
-  print_expr(f1(2));
-  print_expr(f1(20));
-  print_expr(f1(-100));
+  print_expr(f());
 }

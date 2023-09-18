@@ -2,7 +2,7 @@
 *.s
 *.i
 *.out
-*driver
+*driver*
 *.o
 *.DS_Store
 *dSYM*

@@ -12,6 +12,8 @@ extern int optopt;
 extern int opterr;
 extern int optreset;
 
+static char *outfile = 0;
+
 // Main reference: https://en.wikipedia.org/wiki/Tail_recursive_parser
 
 // Eventually you need to make lexing and parsing concurrent... which is fine because you have just one lookahead.
@@ -244,6 +246,7 @@ MAKE_BINOP_PARSER(parse_expr, parse_assignment_expr, expr_pred)
 
 extern VisitorHeader *new_ssa_visitor();
 extern VisitorHeader *new_ast_visitor();
+extern VisitorHeader *new_x86_64_visitor();
 
 static void parse_start(FILE *in, const char *filename, VisitorHeader *visitor) {
   StringPool *pool = new_string_pool();
@@ -263,6 +266,16 @@ static void parse_start(FILE *in, const char *filename, VisitorHeader *visitor) 
     printf("\n\nThe state of the visitor at the end was:\n\n");
     visitor->dump(visitor, stdout);
 
+    if (outfile) {
+      FILE *out = fopen(outfile, "w");
+      // TODO: checked_fopen
+      DIE_IF(!in, "Couldn't open output file");
+      visitor->dump(visitor, out);
+      // fclose(out);
+      // out = 0;
+    }
+    // printf("The output above was writen to %s\n", outfile);
+
     if (cont.pos != cont.tokens_size) {
       fprintf(stderr, "ERROR: Parser did not reach EOF; next token is %s\n", peek_str(&cont));
     }
@@ -280,14 +293,17 @@ void init_parser_module() {
 void usage() {
   fprintf(stderr, "usage: parser_driver [options] file\n\n");
   fprintf(stderr, "options:\n");
-  fprintf(stderr, "  -v <visitor> which visitor to use (choices: ssa, ast)\n");
+  fprintf(stderr, "  -v <visitor> which visitor to use (choices: ssa, ast, x86_64)\n");
+  fprintf(stderr, "  -o <file>    save output to this file");
   exit(1);
 }
 
+// hack
 int main(int argc, char *argv[]) {
-  VisitorConstructor visitor_ctor;
+  VisitorConstructor visitor_ctor = 0;
   int ch;
-  while ((ch = getopt(argc, argv, "v:")) != -1) {
+  int optarg_len;
+  while ((ch = getopt(argc, argv, "v:o:")) != -1) {
     switch (ch) {
       case 'v':
         if (strcmp(optarg, "ssa") == 0) {
@@ -296,7 +312,15 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(optarg, "ast") == 0) {
           visitor_ctor = new_ast_visitor;
           break;
+        } else if (strcmp(optarg, "x86_64") == 0) {
+          visitor_ctor = new_x86_64_visitor;
+          break;
         }
+      case 'o':
+        optarg_len = strlen(optarg);
+        outfile = checked_malloc(optarg_len + 1);
+        strlcpy(outfile, optarg, optarg_len + 1);
+        break;
       case '?':
       default:
         usage();

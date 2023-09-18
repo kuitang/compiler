@@ -1,10 +1,14 @@
 The final result is:
 
-t3
+t7
 
 The state of the visitor at the end was:
 
 t1 = load immediate I64 $1
 t2 = load immediate I64 $2
 t3 = add t1, t2
+t4 = load immediate I64 $3
+t5 = add t3, t4
+t6 = load immediate I64 $4
+t7 = sub t5, t6
 string pool:
