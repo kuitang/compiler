@@ -19,6 +19,5 @@ _f:
 	subq	-48(%rbp), %rax
 	pushq	%rax			# at %rsp = -56(%rbp)
 
-	addq	$56,%rsp
-	popq	%rbp
+	leave
 	retq

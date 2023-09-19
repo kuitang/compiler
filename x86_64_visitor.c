@@ -50,6 +50,14 @@ static char *template =
   "\t%s\t%d(%%rbp), %%rax\n"
   "\tpushq\t%%rax\t\t\t# at %%rsp = %d(%%rbp)\n";
 
+static char *div_template =
+  "\tmovq\t%d(%%rbp), %%rax\n"
+  "\tmovq\t%%rax, %%rdx\n"
+  "\tsarq\t$63, %%rdx\n"  // no cltq for 64 bits
+  "\tidivq\t%d(%%rbp), %%rax\n"
+  "\tpushq\t%%rax\t\t\t# at %%rsp = %d(%%rbp)\n";
+  
+
 static void *visit_binop(x86_64_Visitor *v, TokenKind op, x86_64_Instruction *left, x86_64_Instruction *right) {
   x86_64_Instruction *inst;
   switch (op) {
@@ -61,12 +69,14 @@ static void *visit_binop(x86_64_Visitor *v, TokenKind op, x86_64_Instruction *le
       inst = insert_new_instruction(v, 8);
       checked_asprintf(&inst->text, template, left->dest, "subq", right->dest, inst->dest);
       break;
-    // case TOK_STAR_OP:
-    //   x86_64_op = "mul";
-    //   break;
-    // case TOK_DIV_OP:
-    //   x86_64_op = "div";
-    //   break;
+    case TOK_STAR_OP:
+      inst = insert_new_instruction(v, 8);
+      checked_asprintf(&inst->text, template, left->dest, "imulq", right->dest, inst->dest);
+      break;
+    case TOK_DIV_OP:
+      inst = insert_new_instruction(v, 8);
+      checked_asprintf(&inst->text, div_template, left->dest, right->dest, inst->dest);
+      break;
     case TOK_COMMA:
       // special case; just return right
       return right;
@@ -81,13 +91,12 @@ static int is_unary_expr(x86_64_Instruction *expr) {
 }
 
 static char *prologue = "# COMPILED BY KUI AND NOT CLANG!\n\t.globl	_f\n_f:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n";
-static char *epilogue = "\tpopq\t%rbp\n\tretq\n";
+static char *epilogue = "\tleave\n\tretq\n";
 static void dump(x86_64_Visitor *v, FILE *out) {
   fputs(prologue, out);
   for (int i = 0; i < v->instructions_size; i++) {
     fprintf(out, "%s\n", v->instructions[i].text);
   }
-  fprintf(out, "\taddq\t$%d,%%rsp\n", -v->rbp_off);
   fputs(epilogue, out);
 }
 
