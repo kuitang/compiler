@@ -46,7 +46,7 @@ void init_lexer_module() {
 }
 
 StringPool *new_string_pool() {
-  StringPool *ret = malloc(sizeof(StringPool));
+  StringPool *ret = checked_calloc(1, sizeof(StringPool));
   NEW_VECTOR(ret->string_val, sizeof(char *));
   ret->string_id = kh_init_string();
   return ret;
@@ -59,7 +59,7 @@ void fprint_string_pool(FILE *f, StringPool *pool) {
   }
 }
 
-ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *constant_pool) {
+ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *string_pool) {
   ScannerCont cont = {
     .filename = filename,
     .pos = 0,
@@ -68,7 +68,7 @@ ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *consta
     .saved_pos = -1,
     .saved_line = -1,
     .saved_col = -1,
-    .constant_pool = constant_pool,
+    .string_pool = string_pool,
   };
   DIE_IF(fseek(in, 0, SEEK_END) == -1, "seek end");
   cont.size = ftell(in);
@@ -255,7 +255,7 @@ label_start:
   save_pos(cont);
   if (ch == '"') {
     char *s = parse_string_literal(cont);
-    int id = intern_string(cont->constant_pool, s);
+    int id = intern_string(cont->string_pool, s);
     Token ret = make_partial_token(cont, TOK_STRING_LITERAL);
     ret.string_id = id;
     return ret;
@@ -324,10 +324,10 @@ label_start:
     char *s = malloc(span_len + 1);
     THROW_IF(!s, EXC_SYSTEM, "malloc span_len failed");
     strlcpy(s, cont->buf + cont->saved_pos, span_len + 1);
-    int id = intern_string(cont->constant_pool, s);
+    int id = intern_string(cont->string_pool, s);
     Token ret = make_partial_token(cont, TOK_IDENT);
     ret.string_id = id;
-    fprintf(stderr, "parsed identifier %s, id = %d\n", s, id);
+    fprintf(stderr, "lexer: scanned identifier %s, id = %d\n", s, id);
     return ret;
   }
 label_error:

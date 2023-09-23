@@ -5,7 +5,7 @@
 #include <stdlib.h>
 
 // Generic helpers
-// Exceptions (there can be only one exception handler)
+// Exceptions (there can be only one exception handler; make a stack later)
 typedef enum {
   EXC_UNSET = 0,
   EXC_SYSTEM,
@@ -35,6 +35,8 @@ typedef enum {
 } while (0);
 
 #define THROW_IF(cond, kind_, ...) if (cond) THROW(kind_, #cond ": " __VA_ARGS__)
+#define THROWF_IF(cond, kind_, format, ...) if (cond) THROWF(kind_, format, __VA_ARGS__)
+
 #define PRINT_EXCEPTION() do { \
   fprintf( \
     stderr, \
@@ -61,6 +63,20 @@ extern int errno;
 #define DEBUG_PRINT_EXPR(format, ...) fprintf(stderr, "DEBUG %s in %s:%d: " #__VA_ARGS__ " = " format "\n", __FUNCTION__, __FILE__, __LINE__, __VA_ARGS__)
 #define DEBUG_PRINT(msg) fprintf(stderr, "DEBUG %s:%d: %s\n", __FILE__, __LINE__, msg)
 
+// Checked functions
+void *checked_malloc(size_t size);
+void *checked_calloc(size_t count, size_t size);
+int checked_asprintf(char **ret, const char *format, ...);
+void *checked_realloc(void *ptr, size_t size);
+void *checked_memcpy(void *restrict dst, const void *restrict src, size_t n);
+
+FILE *checked_fopen(const char * restrict path, const char * restrict mode);
+FILE *checked_open_memstream(char **bufp, size_t *sizep);
+FILE *checked_fmemopen(void *restrict buf, size_t size, const char * restrict mode);
+#define checked_fclose(stream) DIE_IF(fclose(stream), "fclose failed")
+
+char *fmtstr(const char *format, ...);
+
 // Vectors
 // Generic vector interface: assume storage, storage ## _size, storage ## _capacity identifiers exist.
 // Hence no need to typedef each usage.
@@ -72,8 +88,7 @@ extern int errno;
 
 #define NEW_VECTOR(storage, element_size) \
   do { \
-    storage = malloc((element_size) * VECTOR_INITIAL_CAPACITY); \
-    THROW_IF(!(storage), EXC_SYSTEM, "NEW_VECTOR failed"); \
+    storage = checked_calloc(element_size, VECTOR_INITIAL_CAPACITY); \
     storage ## _size = 0; \
     storage ## _capacity = VECTOR_INITIAL_CAPACITY; \
   } while (0)
@@ -82,8 +97,7 @@ extern int errno;
   do { \
     if (storage ## _size == storage ## _capacity) { \
       storage ## _capacity *= 2; \
-      storage = realloc(storage, storage ## _capacity * sizeof(value)); \
-      THROW_IF(!(storage), EXC_SYSTEM, "realloc failure for vector " #storage); \
+      storage = checked_realloc(storage, storage ## _capacity * sizeof(value)); \
     } \
     storage[(storage ## _size)++] = (value); \
   } while (0)
@@ -104,10 +118,30 @@ typedef struct {
   int line;
 } Exception;
 
+// better version
+#define Vec(type) struct {void *storage; int element_size; int size; int capacity;}
+#define new_vec(type) { \
+  .storage = checked_malloc(VECTOR_INITIAL_CAPACITY * sizeof(type)), \
+  .element_size = sizeof(type), \
+  .size = 0, \
+  .capacity = VECTOR_INITIAL_CAPACITY \
+}
+#define vec_push(type, vec, val) do {\
+  if ((vec).size == (vec).capacity) { \
+    (vec).capacity << 1; \
+    vec = checked_realloc((vec).capacity * sizeof(type)); \
+  } \
+  (vec)[(vec).size++] = (val) \
+} while(0)
+
+#define vec_peek(vec) (vec)->storage[(vec).size]
+#define vec_popv(vec) (vec).size--
+#define vec_size(vec) (vec).size
+#define vec_pop(vec) (vec).storage[(vec).size--]
+#define vec_ix(vec, ix) (vec).storage[ix * sizeof(type)]
+  
+
 extern const char *EXCEPTION_KIND_TO_STR[];
 extern Exception global_exception;
 extern jmp_buf global_exception_handler;
 
-void *checked_malloc(size_t size);
-void *checked_calloc(size_t count, size_t size);
-int checked_asprintf(char **ret, const char *format, ...);

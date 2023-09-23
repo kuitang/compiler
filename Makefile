@@ -1,6 +1,6 @@
 # all: kuicc_program.s clan_program.s clang_opt_program.s
 CC = clang
-CFLAGS = -O0 -g -std=c11 -Wall -Werror -Wpedantic -fsanitize=address,undefined -fno-omit-frame-pointer
+CFLAGS = -O0 -g3 -std=c11 -Wall -Wextra -Werror -Wpedantic -fsanitize=address,undefined -fno-omit-frame-pointer
 # all: clang_program.s clang_opt_program.s
 
 all: run golden/prog1_trace.txt golden/prog2_parse.txt golden/one_plus_two_parse.txt golden/one_plus_two_ast.txt golden/prog2_ast.txt golden/floating_expr_ast.txt golden/floating_expr_parse.txt
@@ -45,6 +45,11 @@ golden/one_plus_two.s: parser_driver golden/one_plus_two.c
 	./parser_driver -v x86_64 -o golden/one_plus_two.s golden/one_plus_two.c
 	git --no-pager diff --color-words $@
 
+golden/declarations.s: parser_driver golden/declarations.c
+	rm -f $@
+	./parser_driver -v ssa -o golden/declarations.s golden/declarations.c
+	git --no-pager diff --color-words $@
+
 driver: driver.c golden/one_plus_two.s
 	clang -o $@ driver.c golden/one_plus_two.s
 
@@ -66,9 +71,9 @@ parser_driver: parser_driver.c ssa_visitor.o ast_visitor.o x86_64_visitor.o lexe
 
 lexer_driver: lexer_driver.c lexer.o common.o
 
-# lexer.o: lexer.c common.h
+lexer.o: lexer.c common.h
 
-# common.o: common.c common.h
+common.o: common.c common.h
 
 # gen_tokens: gen_tokens.c common.h
 # 	$(CC) $(CFLAGS) $< -o $@

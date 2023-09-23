@@ -22,7 +22,7 @@ typedef struct {
   int saved_pos;
   int saved_line;
   int saved_col;
-  StringPool *constant_pool;
+  StringPool *string_pool;
 } ScannerCont;
 
 typedef enum {
@@ -47,7 +47,7 @@ typedef struct {
 } Token;
 
 StringPool *new_string_pool();
-ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *constant_pool);
+ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *string_pool);
 Token consume_next_token(ScannerCont *cont);
 void fprint_string_repr(FILE *out, const char *s);
 void fprint_string_pool(FILE *f, StringPool *pool);
