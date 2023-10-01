@@ -16,8 +16,6 @@ extern int optopt;
 extern int opterr;
 extern int optreset;
 
-static char *outfile = 0;
-
 // Main reference: https://en.wikipedia.org/wiki/Tail_recursive_parser
 
 // Eventually you need to make lexing and parsing concurrent... which is fine because you have just one lookahead.
@@ -25,6 +23,7 @@ static char *outfile = 0;
 // See https://stackoverflow.com/questions/59482460/how-to-handle-ambiguity-in-syntax-like-in-c-in-a-parsing-expression-grammar-l#:~:text=The%20well%2Dknown%20%22typedef%20problem,to%20the%20lexer%20during%20parsing.
 
 // [x86_64ABI Figure 3.1] https://refspecs.linuxbase.org/elf/x86_64-abi-0.98.pdf
+// TODO: Move this to the visitor, i.e. get_primitive_type_size
 const MachineSizes X86_64_SIZES = {
   .char_size = 1,
   .short_size = 2,
@@ -38,34 +37,24 @@ const MachineSizes X86_64_SIZES = {
 };
 
 typedef struct {
-  int index;
-  int offset;
-  const Type *type;
+  DeclarationSpecifiers decl_specs;
+  void *value;
 } Symbol;
 
+struct SymbolTable;
 KHASH_MAP_INIT_INT(SymbolTableMap, Symbol *)
 typedef struct SymbolTable {
   kh_SymbolTableMap_t *map;
-  int curr_index;
-  int curr_offset;
   struct SymbolTable *parent;
 } SymbolTable;
 
 SymbolTable *new_symbol_table() {
-  SymbolTable *ret = checked_malloc(sizeof(SymbolTable));
+  SymbolTable *ret = checked_calloc(1, sizeof(SymbolTable));
   ret->map = kh_init_SymbolTableMap();
-  ret->curr_index = 0;
-  ret->curr_offset = 0;
   return ret;
 }
 
-int next_aligned_offset(int curr_offset, int size, int alignment) {
-  int new_offset = curr_offset + size;
-  new_offset += new_offset % alignment;
-  return new_offset;
-}
-
-const Symbol *get_symbol(const struct SymbolTable *tab, int string_id) {
+void *get_symbol(const struct SymbolTable *tab, int string_id) {
   if (!tab)
     return 0;
     
@@ -112,19 +101,19 @@ char *type_to_json(const Type *type) {
   return buf;
 }
 
-struct SymbolTable;
 typedef struct {
   ScannerCont *scont;  
-  int depth;
+  // int depth;
   int pos;  // current token
   MachineSizes sizes;
   MachineSizes alignments;
-  struct VisitorHeader *visitor;
-  struct SymbolTable *symtab;
+  Visitor *visitor;
+  SymbolTable *symtab;
+  StringPool *string_pool;
   DECLARE_VECTOR(Token, tokens)
 } ParserCont;
 
-ParserCont make_parser_cont(ScannerCont *scont, VisitorHeader *visitor) {
+ParserCont make_parser_cont(ScannerCont *scont, Visitor *visitor) {
   ParserCont ret = {
     .scont = scont,
     .sizes = X86_64_SIZES,
@@ -136,12 +125,9 @@ ParserCont make_parser_cont(ScannerCont *scont, VisitorHeader *visitor) {
   return ret;
 }
 
-SymbolTable *push_new_symbol_table(ParserCont *cont, int inherit_offset) {
+SymbolTable *push_new_symbol_table(ParserCont *cont) {
   SymbolTable *ret = new_symbol_table();
   ret->parent = cont->symtab;
-  if (inherit_offset) {
-    ret->curr_offset = cont->symtab->curr_offset;
-  }
   cont->symtab = ret;
   DEBUG_PRINT_EXPR(
     "pushing new symbol table = %p; old symbol table was %p",
@@ -153,29 +139,23 @@ SymbolTable *push_new_symbol_table(ParserCont *cont, int inherit_offset) {
 
 void pop_symbol_table(ParserCont *cont) {
   SymbolTable *top_tab = cont->symtab;
-  Symbol *x;
-  kh_foreach_value(top_tab->map, x, free(x))
-  kh_destroy_SymbolTableMap(top_tab->map);
+  // can't free just yet...
+  //
+  // Symbol *x;
+  // kh_foreach_value(top_tab->map, x, free(x))
+  // kh_destroy_SymbolTableMap(top_tab->map);
   cont->symtab = top_tab->parent;
-  free(top_tab);
+  // free(top_tab);
 }
 
-const Symbol *insert_symbol(ParserCont *cont, int string_id, const Type *type) {
-  SymbolTable *tab = cont->symtab;
+void insert_symbol(SymbolTable *tab, int string_id, DeclarationSpecifiers decl_specs, void *value) {
   khiter_t map_iter = kh_get_SymbolTableMap(tab->map, string_id);
   THROWF_IF(map_iter != kh_end(tab->map), EXC_PARSE_SYNTAX, "symbol string_id %d is already defined in current scope", string_id);
   int ret;
   map_iter = kh_put_SymbolTableMap(tab->map, string_id, &ret);
   THROW_IF(ret == -1, EXC_SYSTEM, "kh_put failed");
 
-  Symbol *new_symbol = checked_calloc(1, sizeof(Symbol));
-  new_symbol->index = tab->curr_index;
-  new_symbol->offset = tab->curr_offset;
-  new_symbol->type = type;
-  kh_val(tab->map, map_iter) = new_symbol;
-
-  tab->curr_index++;
-  tab->curr_offset = next_aligned_offset(tab->curr_offset, type->size, type->alignment);
+  kh_val(tab->map, map_iter) = value;
 
   // debug
   khiter_t get_iter = kh_get_SymbolTableMap(tab->map, string_id);
@@ -185,14 +165,7 @@ const Symbol *insert_symbol(ParserCont *cont, int string_id, const Type *type) {
     "could not get string_id %d back from the symbol map hashtable", string_id
   );
   Symbol *get_value = kh_val(tab->map, string_id);
-  printf(
-    "inserted into symbol table %p at index %d, offset %d: %s\n",
-    (void *) tab,
-    get_value->index,
-    get_value->offset,
-    type_to_json(get_value->type)
-  );
-  return new_symbol;
+  assert(value == get_value);
 }
 
 // Helpers
@@ -203,6 +176,10 @@ Token peek(ParserCont *cont) {
 }
 
 const char *peek_str(ParserCont *cont) {
+  Token tok = peek(cont);
+  if (tok.kind == TOK_IDENT) {
+    return fmtstr("%s[%s]", TOKEN_NAMES[tok.kind], tok.identifier_name);
+  }
   return TOKEN_NAMES[peek(cont).kind];
 }
 
@@ -210,11 +187,11 @@ void backtrack_to(ParserCont *cont, int new_pos) {
   cont->pos = new_pos;
 }
 
-static void consume(ParserCont *cont) {
-  THROW_IF(cont->pos == cont->tokens_size, EXC_PARSE_SYNTAX, "EOF reached without finishing parse");
-  DEBUG_PRINT_EXPR("consumed %s", peek_str(cont));
-  cont->pos++;
-}
+#define consume(cont) do { \
+  THROW_IF(cont->pos == cont->tokens_size, EXC_PARSE_SYNTAX, "EOF reached without finishing parse"); \
+  DEBUG_PRINT_EXPR("consumed %s", peek_str(cont)); \
+  cont->pos++; \
+} while (0)
 
 // #define is_parser_eof(cont) (cont)->pos == (cont)->tokens_size;
 
@@ -238,6 +215,9 @@ int _tok_is_in(TokenKind op, ...) {
 }
 #define tok_is_in(op, ...) _tok_is_in(op, __VA_ARGS__, TOK_END_OF_FILE)
 
+#define CALL(receiver, method, ...) (receiver)->method((receiver), __VA_ARGS__)
+#define CALL0(receiver, method) (receiver)->method(receiver)
+
 // parse_primary_expr needs this forward declaration
 void *parse_expr(ParserCont *cont);
 
@@ -245,19 +225,16 @@ void *parse_primary_expr(ParserCont *cont) {
   PRINT_ENTRY();
   Token tok = peek(cont);
   void *ret;
-  const Symbol *sym;
   switch (tok.kind) {
     case TOK_IDENT:
-      sym = get_symbol(cont->symtab, tok.string_id);
-      THROWF_IF(!sym, EXC_PARSE_SYNTAX, "identifier %d not found in any symbol table", tok.string_id);
       consume(cont);
-      return cont->visitor->visit_ident(cont->visitor, sym->type, sym->index, sym->offset);
+      return get_symbol(cont->symtab, tok.string_id);
     case TOK_FLOAT_LITERAL:
       consume(cont);
-      return cont->visitor->visit_float_literal(cont->visitor, tok.constant_val.double_val);
+      return cont->visitor->visit_float_literal(cont->visitor, tok.double_val);
     case TOK_INTEGER_LITERAL:
       consume(cont);
-      return cont->visitor->visit_integer_literal(cont->visitor, tok.constant_val.int64_val);
+      return cont->visitor->visit_integer_literal(cont->visitor, tok.int64_val);
     case TOK_LEFT_PAREN:
       consume(cont);
       ret = parse_expr(cont);
@@ -279,7 +256,7 @@ void *parse_postfix_expr(ParserCont *cont) {
 void *parse_unary_expr(ParserCont *cont) {
   PRINT_ENTRY();
   void *ret = parse_postfix_expr(cont);
-  cont->visitor->set_property(ret, PROP_IS_UNARY_EXPR, 1);
+  // cont->visitor->set_property(ret, PROP_IS_UNARY_EXPR, 1);
   return ret;
 }
 
@@ -360,7 +337,6 @@ void *parse_conditional_expr(ParserCont *cont) {
 
 #define is_type_specifier_first(op) (tok_is_in(op, scalar_type_specifier_list, TOK_struct, TOK_union, TOK_enum))
 #define is_declaration_specifier_first(op) is_type_specifier_first(op)
-#define is_declaration_first(op) is_declaration_specifier_first(op)
 
 // int is_typedef_name(ParserCont *cont, int string_id) {
 //   return 0;
@@ -483,7 +459,7 @@ label_finish:
       break;
     default: assert(0 && "Unreachable!");
   }
-  return (DeclarationSpecifiers) {.type = ty, .some_flag = 0xDEADBEEF};
+  return (DeclarationSpecifiers) {.type = ty};
 }
 
 #define is_assignment_op(op) tok_is_in( \
@@ -500,213 +476,244 @@ label_finish:
 
 void *parse_assignment_expr(ParserCont *cont) {
   PRINT_ENTRY();
-  void *left = parse_conditional_expr(cont);
+  void *left = parse_conditional_expr(cont);  // which could be an unary expression
   void *right = 0;
   for (;;) {
-    Token op = peek(cont);
-    int left_is_unary_expr = cont->visitor->get_property(left, PROP_IS_UNARY_EXPR);
-    if (!(left_is_unary_expr && is_assignment_op(op.kind)))
+    TokenKind op = peek(cont).kind;
+    if (!is_assignment_op(op))
       break;
     // Now we know this is an assignment
     consume(cont);
     right = parse_assignment_expr(cont);
-    left = cont->visitor->visit_assign(cont->visitor, left, right);
+    left = cont->visitor->visit_assign(cont->visitor, op, left, right);
   }
   return left;
 }
 
-// only support identifier
-void *parse_declarator(ParserCont *cont, DeclarationSpecifiers decl_specs) {
+Declarator *parse_declarator(ParserCont *cont) {
   PRINT_ENTRY();
-  Token ident = peek(cont);
-  THROW_IF(ident.kind != TOK_IDENT, EXC_PARSE_SYNTAX, "only identifier declarators are supported for now.");
-  consume(cont);
-  const Symbol *sym = insert_symbol(cont, ident.string_id, decl_specs.type);
-  return cont->visitor->visit_declarator(cont->visitor, sym->index, sym->offset);
-}
+  Declarator *ret = calloc(1, sizeof(Declarator));
 
-typedef struct {
-  int success;
-  int function_name;
-  int params_have_names;
-  DECLARE_VECTOR(int, param_names)
-  DECLARE_VECTOR(DeclarationSpecifiers, param_specifiers)
-} FunctionDefinitionDeclarator;
-
-// pretty sure ident is the ONLY valid kind of declarator; rename to emphasize function definition?
-FunctionDefinitionDeclarator parse_function_definition_declarator(ParserCont *cont) {
-  PRINT_ENTRY()
-  // no pointers or parentheses funny business; dear god it'll be fun to parse function pointer definitions
-  FunctionDefinitionDeclarator ret = { .success = 0, .params_have_names = 0 };  // i.e. failure
-  NEW_VECTOR(ret.param_names, sizeof(int));
-  NEW_VECTOR(ret.param_specifiers, sizeof(DeclarationSpecifiers));
-
-  Token ident = peek(cont);
-  if (ident.kind != TOK_IDENT)
-    return ret;  // fail
-  ret.function_name = ident.string_id;
-  consume(cont);
-  if (peek(cont).kind != TOK_LEFT_PAREN) {
-    // no opening paren => not a function declarator => fail
+  if (peek(cont).kind == TOK_STAR_OP) {
+    ret->is_pointer = 1;
+    consume(cont);
+  }
+  if (peek(cont).kind == TOK_LEFT_PAREN) {
+    consume(cont);
+    ret = parse_declarator(cont);
+    THROW_IF(peek(cont).kind != TOK_RIGHT_PAREN, EXC_PARSE_SYNTAX, "Expected ) to close declarator");
+    consume(cont);
     return ret;
   }
+  THROW_IF(peek(cont).kind != TOK_IDENT, EXC_PARSE_SYNTAX, "Expected identifier");
+  Token ident = peek(cont);
+  ret->kind = DC_SCALAR;  // scalar until proven otherwise
+  ret->ident_string_id = ident.string_id;
+  ret->ident_string = ident.identifier_name;
   consume(cont);
 
-  DeclarationSpecifiers declaration_specifiers;
-  int param_string_id;
-  for (;;) {
-    declaration_specifiers = parse_declaration_specifiers(cont);
-    APPEND_VECTOR(ret.param_specifiers, declaration_specifiers);
-    if (peek(cont).kind == TOK_IDENT) {
-      param_string_id = peek(cont).string_id;
-      APPEND_VECTOR(ret.param_names, param_string_id);
+  DECLARE_VECTOR(DeclarationSpecifiers, param_decl_specs)
+  DECLARE_VECTOR(Declarator *, param_declarators)
+
+  NEW_VECTOR(param_decl_specs, sizeof(DeclarationSpecifiers));
+  NEW_VECTOR(param_declarators, sizeof(Declarator *));
+  
+  if (peek(cont).kind == TOK_LEFT_PAREN) {
+    // parse function declarator
+    ret->kind = DC_FUNCTION;
+    consume(cont);
+
+    for (;;) {
+      DeclarationSpecifiers curr_decl_specs = parse_declaration_specifiers(cont);
+      Declarator *curr_declarator = parse_declarator(cont);
+      APPEND_VECTOR(param_decl_specs, curr_decl_specs);
+      APPEND_VECTOR(param_declarators, curr_declarator);
+
+      if (peek(cont).kind != TOK_COMMA)
+        break;
+
       consume(cont);
-    } else {
-      ret.params_have_names = 0;
     }
+    assert(VECTOR_SIZE(param_decl_specs) == VECTOR_SIZE(param_declarators));
+    THROW_IF(peek(cont).kind != TOK_RIGHT_PAREN, EXC_PARSE_SYNTAX, "Expected ) to close function declarator");
 
-    // parsed the parameter declaration; now look for , or )
-    switch (peek(cont).kind) {
-      case TOK_COMMA:
-        consume(cont);
-        break;
-      case TOK_RIGHT_PAREN:
-        consume(cont);
-        // finish the declarator
-        assert(!ret.params_have_names || ret.param_specifiers_size == ret.param_names_size);
-        ret.success = 1;
-        return ret;
-      case TOK_END_OF_FILE:
-        THROW(EXC_PARSE_SYNTAX, "Unmatched (");
-      default:
-        break;
-    }
+    consume(cont);
+    ret->n_params = VECTOR_SIZE(param_decl_specs);
+    ret->param_decl_specs = param_decl_specs;
+    ret->param_declarators = param_declarators;
   }
-  assert(0 && "Unreachable!");
-}
-
-void *parse_init_declarator_list(ParserCont *cont, DeclarationSpecifiers declaration_specifiers) {
-  PRINT_ENTRY();
-  // only support list of declarators for now
-  void *declarator = parse_declarator(cont, declaration_specifiers);
-  for (;;) {
-    if (peek(cont).kind != TOK_COMMA)
-      break;
-    declarator = parse_declarator(cont, declaration_specifiers);
-  }
-  return declarator;
-}
-
-// TODO: Make compatible with AST visitor; viz put prev in everything... or do something else?
-void *parse_declaration(ParserCont *cont) {
-  PRINT_ENTRY();
-  DeclarationSpecifiers declaration_specifiers = parse_declaration_specifiers(cont);
-  fprintf(stdout, "parsed declaration_specifiers (really just type): %s\n", type_to_json(declaration_specifiers.type));
-  void *ret = parse_init_declarator_list(cont, declaration_specifiers);
-  THROW_IF(peek(cont).kind != TOK_SEMI, EXC_PARSE_SYNTAX, "expected ; to finish declaration");
-  consume(cont);
+  // arrays not supported
   return ret;
 }
 
+void *parse_initializer(ParserCont *cont) {
+  PRINT_ENTRY();
+  return parse_assignment_expr(cont);
+}
+
+void *visit_and_insert_declaration(ParserCont *cont, DeclarationSpecifiers decl_specs, Declarator *declarator) {
+    void *declaration = cont->visitor->visit_declaration(cont->visitor, decl_specs, declarator);
+    insert_symbol(cont->symtab, declarator->ident_string_id, decl_specs, declaration);
+    return declaration;
+}
+
+void parse_declaration_rest(ParserCont *cont, DeclarationSpecifiers decl_specs, Declarator *first_declarator) {
+  PRINT_ENTRY();
+  Declarator *declarator = first_declarator;
+  for (;;) {
+    TokenKind op = peek(cont).kind;
+    switch (op) {
+      case TOK_SEMI:
+        consume(cont);
+        visit_and_insert_declaration(cont, decl_specs, declarator);
+        return;
+      case TOK_COMMA:
+        consume(cont);
+        visit_and_insert_declaration(cont, decl_specs, declarator);
+        declarator = parse_declarator(cont);
+        break;  // more declarators to come
+      case TOK_ASSIGN_OP:
+        consume(cont);
+        void *lhs = visit_and_insert_declaration(cont, decl_specs, declarator);
+        // TODO: Support initializer lists differently... it won't "just" be delegating to visit_assign.
+        void *rhs = parse_initializer(cont);
+        cont->visitor->visit_assign(cont->visitor, TOK_ASSIGN_OP, lhs, rhs);
+        // consume the comma there, to prevent the previous rule from declaring twice
+        if (peek(cont).kind == TOK_COMMA)
+          consume(cont);
+        break;
+      default:
+        THROWF(EXC_PARSE_SYNTAX, "Unexpected token %s", TOKEN_NAMES[op]);
+    }
+  }
+}
+
+#define is_declaration_first(op) is_declaration_specifier_first(op)
+void parse_declaration(ParserCont *cont) {
+  PRINT_ENTRY();
+  DeclarationSpecifiers decl_specs = parse_declaration_specifiers(cont);
+  Declarator *first_declarator = parse_declarator(cont);
+  parse_declaration_rest(cont, decl_specs, first_declarator);
+}
+
+
 void *parse_expression_statement(ParserCont *cont) {
+  PRINT_ENTRY();
   void *expr = parse_expr(cont);
   THROW_IF(peek(cont).kind != TOK_SEMI, EXC_PARSE_SYNTAX, "expected ;");
   consume(cont);
   return expr;
 }
 
-void *parse_compound_statement(ParserCont *cont);
+#define is_jump_statement_first(op) tok_is_in(op, TOK_goto, TOK_continue, TOK_break, TOK_return)
+void parse_jump_statement(ParserCont *cont) {
+  TokenKind op = peek(cont).kind;
+  void *retval = 0;
+  switch (op) {
+    case TOK_return:
+      consume(cont);
+      if (peek(cont).kind != TOK_SEMI) {
+        retval = parse_expr(cont);
+      }
+      THROW_IF(peek(cont).kind != TOK_SEMI, EXC_PARSE_SYNTAX, "Expected ; after return");
+      consume(cont);
+      CALL(cont->visitor, visit_return, retval);
+      break;
+    default:
+      THROWF(EXC_INTERNAL, "Unimplemented jump statement %s", TOKEN_NAMES[op]);
+  }
+}
+
+void parse_compound_statement(ParserCont *cont);
 
 #define is_compound_statement_first(op) tok_is_in(op, TOK_LEFT_BRACE)
-void *parse_statement(ParserCont *cont) {
+void parse_statement(ParserCont *cont) {
   PRINT_ENTRY()
   TokenKind op = peek(cont).kind;
-  if (is_compound_statement_first(op))
-    return parse_compound_statement(cont);
-  return parse_expression_statement(cont);
+  if (is_compound_statement_first(op)) {
+    parse_compound_statement(cont);
+  } else if (is_jump_statement_first(op)) {
+    parse_jump_statement(cont);
+  } else {
+    parse_expression_statement(cont);
+  }
 }
 
-void *parse_block_item(ParserCont *cont) {
+void parse_block_item(ParserCont *cont) {
   PRINT_ENTRY()
-  // this can be parsed predictively
   TokenKind op = peek(cont).kind;
-  if (is_declaration_first(op))
-    return parse_declaration(cont);
-
-  return parse_statement(cont);
+  if (is_declaration_first(op)) {
+    fprintf(stderr, "parse_block_item saw %s; parsing as declaration\n", TOKEN_NAMES[op]);
+    parse_declaration(cont);
+    return;
+  }
+  parse_statement(cont);
 }
 
-void *parse_compound_statement(ParserCont *cont) {
-  PRINT_ENTRY()
-  THROW_IF(peek(cont).kind != TOK_LEFT_BRACE, EXC_PARSE_SYNTAX, "expected {");
-  consume(cont);
-
-  void *block_item = 0;
+void parse_compound_statement_rest(ParserCont *cont) {
   for (;;) {
     // could have 0 items
     if (peek(cont).kind == TOK_RIGHT_BRACE) {
       consume(cont);
-      return block_item;
+      break;
     }
-    block_item = parse_block_item(cont);
+    parse_block_item(cont);
   }
-
-  THROW_IF(peek(cont).kind != TOK_RIGHT_BRACE, EXC_PARSE_SYNTAX, "expected }");
+  pop_symbol_table(cont);
 }
 
-void *parse_function_definition(ParserCont *cont) {
+void parse_compound_statement(ParserCont *cont) {
   PRINT_ENTRY()
-  DeclarationSpecifiers declaration_specifiers = parse_declaration_specifiers(cont);
-  // assert specifiers don't contain other stuff...
-  FunctionDefinitionDeclarator declarator = parse_function_definition_declarator(cont);
-  if (!declarator.success)
-    return 0;
-
-  Type *function_type = checked_calloc(1, sizeof(Type));
-  int n_params = declarator.param_specifiers_size;
-  function_type->kind = TY_FUNCTION;
-  function_type->n_params = n_params;
-  function_type->return_type = declaration_specifiers.type;
-  function_type->declaration_specifiers = checked_calloc(n_params, sizeof(DeclarationSpecifiers));
-  checked_memcpy(function_type->declaration_specifiers, declarator.param_specifiers, n_params * sizeof(DeclarationSpecifiers));
-  // TODO: free!
-  
-  push_new_symbol_table(cont, 1 /* inherit_offset = 1 for a function */);
-  for (int i = 0; i < n_params; i++) {
-    insert_symbol(cont, declarator.param_names[i], declarator.param_specifiers[i].type);
-  }
-  // void *prototype = cont->visitor->visit_function_definition(
-  cont->visitor->visit_function_definition(
-    cont->visitor,
-    declarator.function_name,
-    function_type
-  );
-  return parse_compound_statement(cont);
+  THROW_IF(peek(cont).kind != TOK_LEFT_BRACE, EXC_PARSE_SYNTAX, "expected {");
+  consume(cont);
+  push_new_symbol_table(cont);
+  parse_compound_statement_rest(cont);
 }
 
-void *parse_external_declaration(ParserCont *cont) {
+void parse_function_definition_rest(ParserCont *cont, DeclarationSpecifiers decl_specs, Declarator *func_declarator) {
   PRINT_ENTRY();
-  int saved_pos = cont->pos;
-  // functions_definition and declarations could both begin with declaration_specifiers declaration_declarator, but
-  // the declarations nonterminal will eventually produce ; while the function_definition terminal will eventually
-  // produce a compound_statement. Therefore, we first try to parse as a function declaration and backtrack and try
-  // declaration if we fail. This is safe because parse_function_definition will not generate any code unless it
-  // succeeds.
-  void *function = parse_function_definition(cont);
-  if (function)
-    return function;
-  
-  backtrack_to(cont, saved_pos);
-  return parse_declaration(cont);
+  assert(func_declarator->kind == DC_FUNCTION);
+  CALL(cont->visitor, visit_function_definition_start, decl_specs, func_declarator);
+  push_new_symbol_table(cont);
+  for (int i = 0; i < func_declarator->n_params; i++) {
+    DeclarationSpecifiers param_decl_specs = func_declarator->param_decl_specs[i];
+    Declarator *param_declarator = func_declarator->param_declarators[i];
+    void *param_value = CALL(
+      cont->visitor,
+      visit_function_definition_param,
+      param_decl_specs,
+      param_declarator
+    );
+    insert_symbol(cont->symtab, param_declarator->ident_string_id, param_decl_specs, param_value);
+  }
+  parse_compound_statement_rest(cont);
+  CALL0(cont->visitor, visit_function_end);
+  return;
 }
 
-void *parse_translation_unit(ParserCont *cont) {
-  PRINT_ENTRY()
-  void *external_declaration = parse_external_declaration(cont);
-  while (peek(cont).kind != TOK_END_OF_FILE) {
-    external_declaration = parse_external_declaration(cont);
+// both external 
+// An external declaration can be a declaration or a function definition. Both of them start with
+//   declaration_specifiers declarator
+// and then if the next token is a left brace, we know we have a function definition.
+void parse_external_declaration(ParserCont *cont) {
+  PRINT_ENTRY();
+  DeclarationSpecifiers decl_specs = parse_declaration_specifiers(cont);
+  Declarator *first_declarator = parse_declarator(cont);
+
+  if (peek(cont).kind == TOK_LEFT_BRACE) {
+    consume(cont);
+    parse_function_definition_rest(cont, decl_specs, first_declarator);
+  } else {
+    parse_declaration_rest(cont, decl_specs, first_declarator);
   }
-  return external_declaration; 
+}
+
+void parse_translation_unit(ParserCont *cont) {
+  PRINT_ENTRY()
+  parse_external_declaration(cont);
+  while (peek(cont).kind != TOK_END_OF_FILE) {
+    parse_external_declaration(cont);
+  }
 }
 
 // Comma evaluates the first operand, discards the result, then evaluates the second operand and returns the result.
@@ -718,11 +725,11 @@ void *parse_translation_unit(ParserCont *cont) {
 #define expr_pred(op) (op.kind == TOK_COMMA)
 MAKE_BINOP_PARSER(parse_expr, parse_assignment_expr, expr_pred)
 
-extern VisitorHeader *new_ssa_visitor();
-extern VisitorHeader *new_ast_visitor();
-extern VisitorHeader *new_x86_64_visitor();
+// extern Visitor *new_ssa_visitor(FILE *out);
+// extern Visitor *new_ast_visitor(FILE *out);
+extern Visitor *new_x86_64_visitor(FILE *out);
 
-static void parse_start(FILE *in, const char *filename, VisitorHeader *visitor) {
+static void parse_start(FILE *in, const char *filename, Visitor *visitor) {
   StringPool *pool = new_string_pool();
   ScannerCont scont = make_scanner_cont(in, filename, pool);
   ParserCont cont = make_parser_cont(&scont, visitor);
@@ -734,31 +741,19 @@ static void parse_start(FILE *in, const char *filename, VisitorHeader *visitor) 
       if (tok.kind == TOK_END_OF_FILE)
         break;
     }
-    // void *result = parse_expr(&cont);
-    void *result = parse_translation_unit(&cont);
-    printf("The final result is:\n\n");
-    visitor->dump_result(stdout, result);
-    printf("\n\nThe state of the visitor at the end was:\n\n");
-    visitor->dump(visitor, stdout);
-
-    if (outfile) {
-      FILE *out = fopen(outfile, "w");
-      // TODO: checked_fopen
-      DIE_IF(!in, "Couldn't open output file");
-      visitor->dump(visitor, out);
-      // fclose(out);
-      // out = 0;
-    }
-    // printf("The output above was writen to %s\n", outfile);
+    parse_translation_unit(&cont);
+    // void *result = parse_translation_unit(&cont);
+    visitor->finalize(visitor);
 
     if (cont.pos != cont.tokens_size && peek(&cont).kind != TOK_END_OF_FILE) {
       fprintf(stderr, "ERROR: Parser did not reach EOF; next token is %s\n", peek_str(&cont));
+    } else {
+      fprintf(stderr, "Translation unit parsed completely and successfully!\n");
     }
   } else {
     PRINT_EXCEPTION();
     exit(1);
   }
-  fprint_string_pool(stdout, pool);
 }
 
 void init_parser_module() {
@@ -769,32 +764,32 @@ void usage() {
   fprintf(stderr, "usage: parser_driver [options] file\n\n");
   fprintf(stderr, "options:\n");
   fprintf(stderr, "  -v <visitor> which visitor to use (choices: ssa, ast, x86_64)\n");
-  fprintf(stderr, "  -o <file>    save output to this file");
+  fprintf(stderr, "  -o <file>    save output to this file\n");
   exit(1);
 }
 
 // hack
 int main(int argc, char *argv[]) {
+  FILE *out = stdout;
   VisitorConstructor visitor_ctor = 0;
   int ch;
-  int optarg_len;
   while ((ch = getopt(argc, argv, "v:o:")) != -1) {
     switch (ch) {
       case 'v':
         if (strcmp(optarg, "ssa") == 0) {
-          visitor_ctor = new_ssa_visitor;
-          break;
+          // visitor_ctor = new_ssa_visitor;
+          usage();
+          // break;
         } else if (strcmp(optarg, "ast") == 0) {
-          visitor_ctor = new_ast_visitor;
-          break;
+          // visitor_ctor = new_ast_visitor;
+          usage();
+          // break;
         } else if (strcmp(optarg, "x86_64") == 0) {
           visitor_ctor = new_x86_64_visitor;
           break;
         }
       case 'o':
-        optarg_len = strlen(optarg);
-        outfile = checked_malloc(optarg_len + 1);
-        strlcpy(outfile, optarg, optarg_len + 1);
+        out = checked_fopen(optarg, "w");
         break;
       case '?':
       default:
@@ -807,24 +802,11 @@ int main(int argc, char *argv[]) {
     usage();
   }
 
-  if (!visitor_ctor) {
-    visitor_ctor = new_ssa_visitor;  // or should it be ast?
-  }
-
-  // printf("punctations:\n");
-  // for (int i = 0; i < N_PUNCTS; i++) {
-  //   printf("%8d: %s\n", i, PUNCT_VALUES[i]);
-  // }
-  // printf("keywords:\n");
-  // for (int i = 0; i < N_KEYWORDS; i++) {
-  //   printf("%8d: %s\n", i, KEYWORD_VALUES[i]);
-  // }
-
-  FILE *in = fopen(argv[0], "r");
-  DIE_IF(!in, "Couldn't open input file");
+  visitor_ctor = visitor_ctor ? visitor_ctor : new_x86_64_visitor;
+  FILE *in = checked_fopen(argv[0], "r");
   init_parser_module();
 
-  parse_start(in, argv[0], visitor_ctor());
+  parse_start(in, argv[0], visitor_ctor(out));
   return 0;
 }
 

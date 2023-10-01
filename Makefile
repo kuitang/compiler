@@ -1,6 +1,6 @@
 # all: kuicc_program.s clan_program.s clang_opt_program.s
 CC = clang
-CFLAGS = -O0 -g3 -std=c11 -Wall -Wextra -Werror -Wpedantic -fsanitize=address,undefined -fno-omit-frame-pointer
+CFLAGS = -O0 -g3 -std=c11 -Wall -Wextra -Werror -Wpedantic -Wno-unused-parameter -fsanitize=address,undefined -fno-omit-frame-pointer
 # all: clang_program.s clang_opt_program.s
 
 all: run golden/prog1_trace.txt golden/prog2_parse.txt golden/one_plus_two_parse.txt golden/one_plus_two_ast.txt golden/prog2_ast.txt golden/floating_expr_ast.txt golden/floating_expr_parse.txt
@@ -67,7 +67,7 @@ golden/one_plus_two_clang.s: golden/one_plus_two.c
 	echo "; }" >> tmp/t1.c
 	clang -O0 -S tmp/t1.c -o $@
 
-parser_driver: parser_driver.c ssa_visitor.o ast_visitor.o x86_64_visitor.o lexer.o common.o
+parser_driver: parser_driver.c x86_64_visitor.o lexer.o common.o
 
 lexer_driver: lexer_driver.c lexer.o common.o
 

@@ -134,31 +134,7 @@ typedef enum {
   puncts_(tok_enum_line1_)
 } TokenKind;
 
+#undef tok_enum_line_
+#undef tok_enum_line1_
+
 extern const char *TOKEN_NAMES[];
-
-// helper macros
-// WARNING: Who sorts? If sorts change the order of any of the arrays above, we fail.
-#define KEYWORD_KIND(ix) ((ix) + TOK_SEPARATOR_KEYWORDS + 1)
-#define PUNCT_KIND(ix) ((ix) + TOK_SEPARATOR_PUNCT + 1)
-#define KEYWORD_NAME(ix) TOKEN_NAMES[KEYWORD_KIND(ix)]
-#define PUNCT_NAME(ix) TOKEN_NAMES[PUNCT_NAME(ix)]
-
-#define IS_KEYWORD(kind) ((kind) > TOK_SEPARATOR_KEYWORDS) && ((kind) < TOK_SEPARATOR_PUNCT)
-#define IS_PUNCT(kind) ((kind) > TOK_SEPARATOR_PUNCT)
-#define KEYWORD_KIND_STR(kind) KEYWORD_NAME()
-
-#define sizeof_string_arr_(storage) sizeof(storage) / sizeof(char *)
-#define N_TOKENS sizeof_string_arr_(TOKEN_NAMES)
-#define N_KEYWORDS sizeof_string_arr_(KEYWORD_VALUES)
-#define N_PUNCTS sizeof_string_arr_(PUNCT_VALUES)
-
-// #undef sizeof_string_arr_
-// #undef keywords_
-// #undef puncts_
-// #undef other_tokens_
-// #undef tok_enum_line_
-// #undef raw_string_line_
-// #undef tok_string_line_
-// #undef tok_enum_line_1_
-// #undef tok_string_line_1_
-// #undef id_string_line_0_

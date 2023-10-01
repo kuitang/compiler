@@ -8,6 +8,22 @@
 
 #include "common.h"
 
+// helper macros
+// WARNING: Who sorts? If sorts change the order of any of the arrays above, we fail.
+#define KEYWORD_KIND(ix) ((ix) + TOK_SEPARATOR_KEYWORDS + 1)
+#define PUNCT_KIND(ix) ((ix) + TOK_SEPARATOR_PUNCT + 1)
+#define KEYWORD_NAME(ix) TOKEN_NAMES[KEYWORD_KIND(ix)]
+#define PUNCT_NAME(ix) TOKEN_NAMES[PUNCT_NAME(ix)]
+
+#define IS_KEYWORD(kind) ((kind) > TOK_SEPARATOR_KEYWORDS) && ((kind) < TOK_SEPARATOR_PUNCT)
+#define IS_PUNCT(kind) ((kind) > TOK_SEPARATOR_PUNCT)
+#define KEYWORD_KIND_STR(kind) KEYWORD_NAME()
+
+#define sizeof_string_arr_(storage) sizeof(storage) / sizeof(char *)
+#define N_TOKENS sizeof_string_arr_(TOKEN_NAMES)
+#define N_KEYWORDS sizeof_string_arr_(KEYWORD_VALUES)
+#define N_PUNCTS sizeof_string_arr_(PUNCT_VALUES)
+
 const char *TOKEN_NAMES[] = {
   other_tokens_(tok_string_line_)
   "TOK_SEPARATOR_KEYWORDS",
@@ -16,18 +32,18 @@ const char *TOKEN_NAMES[] = {
   puncts_(tok_string_line1_)
 };
 
-const char *KEYWORD_VALUES[] = {
+static const char *KEYWORD_VALUES[] = {
   keywords_(raw_string_line_)
 };
 
-const char *PUNCT_VALUES[] = {
+static const char *PUNCT_VALUES[] = {
   puncts_(id_string_line_0_)
 };
 
 #define max(x, y) (x) > (y) ? (x) : (y)
 #define fill_lens(storage) do { \
   max_##storage##_len = -1; \
-  for (int _i = 0; _i < n_##storage; _i++) { \
+  for (size_t _i = 0; _i < n_##storage; _i++) { \
     storage##_len[_i] = strlen(storage[_i]); \
     max_##storage##_len = max(storage##_len[_i], max_##storage##_len); \
   } \
@@ -76,7 +92,7 @@ ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *string
   char *buf = malloc(cont.size + 2);
   DIE_IF(buf == 0, "malloc failed");
   DIE_IF(fseek(in, 0, SEEK_SET) == -1, "seek begin");
-  DIE_IF(fread((char *) buf, 1, cont.size, in) < cont.size, "fread did not read enough characters");
+  DIE_IF(fread((char *) buf, 1, cont.size, in) < (size_t) cont.size, "fread did not read enough characters");
   // add another NULL byte to enable two characters of readahead; useful for detecting comments
   buf[cont.size] = '\0';
   buf[cont.size + 1] = '\0';
@@ -284,14 +300,14 @@ label_start:
         getch(cont);
       }
       ret = make_partial_token(cont, TOK_FLOAT_LITERAL);
-      ret.constant_val.double_val = double_val;
+      ret.double_val = double_val;
     } else {
       int n_chars_read = endptr - startptr;
       for (int i = 0; i < n_chars_read; i++) {
         getch(cont);
       }
       ret = make_partial_token(cont, TOK_INTEGER_LITERAL);
-      ret.constant_val.int64_val = int64_val;
+      ret.int64_val = int64_val;
     }
     // in either case, advance scanner
     return ret;
@@ -321,13 +337,14 @@ label_start:
       getch(cont);
     }
     int span_len = cont->pos - cont->saved_pos;
-    char *s = malloc(span_len + 1);
-    THROW_IF(!s, EXC_SYSTEM, "malloc span_len failed");
-    strlcpy(s, cont->buf + cont->saved_pos, span_len + 1);
-    int id = intern_string(cont->string_pool, s);
+    char *name = malloc(span_len + 1);
+    THROW_IF(!name, EXC_SYSTEM, "malloc span_len failed");
+    strlcpy(name, cont->buf + cont->saved_pos, span_len + 1);
+    int id = intern_string(cont->string_pool, name);
     Token ret = make_partial_token(cont, TOK_IDENT);
     ret.string_id = id;
-    fprintf(stderr, "lexer: scanned identifier %s, id = %d\n", s, id);
+    ret.identifier_name = name;
+    fprintf(stderr, "lexer: scanned identifier %s, id = %d\n", name, id);
     return ret;
   }
 label_error:
@@ -360,3 +377,13 @@ void fprint_string_repr(FILE *out, const char *s) {
   }
 }
 
+#undef sizeof_string_arr_
+#undef keywords_
+#undef puncts_
+#undef other_tokens_
+#undef tok_enum_line_
+#undef raw_string_line_
+#undef tok_string_line_
+#undef tok_enum_line_1_
+#undef tok_string_line_1_
+#undef id_string_line_0_

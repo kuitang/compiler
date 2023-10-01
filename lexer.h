@@ -33,12 +33,13 @@ typedef enum {
 
 typedef struct {
   TokenKind kind;
-  int string_id;
   union {
+    int string_id;
     int64_t int64_val;
     double double_val;
-  } constant_val;
+  };
   // debugging
+  const char *identifier_name;
   const char *filename;
   int line_start;
   int line_end;
@@ -53,5 +54,3 @@ void fprint_string_repr(FILE *out, const char *s);
 void fprint_string_pool(FILE *f, StringPool *pool);
 
 void init_lexer_module();
-
-extern const char *TOKEN_NAMES[];
