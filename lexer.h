@@ -41,6 +41,8 @@ typedef struct {
   // debugging
   const char *identifier_name;
   const char *filename;
+  int pos_start;
+  int pos_end;
   int line_start;
   int line_end;
   int col_start;

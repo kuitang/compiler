@@ -1,4 +1,5 @@
 #pragma once
+#include <signal.h>
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -25,6 +26,11 @@ typedef enum {
     .file = __FILE__, \
     .line = __LINE__ \
   }; \
+  if (kind_ == EXC_INTERNAL) { \
+    PRINT_EXCEPTION(); \
+    fprintf(stderr, "INTERNAL ERROR -- trapping to debugger!\n"); \
+    raise(SIGTRAP); \
+  } \
   longjmp(global_exception_handler, 1); \
 } while (0)
 
@@ -88,7 +94,7 @@ char *fmtstr(const char *format, ...);
 
 #define NEW_VECTOR(storage, element_size) \
   do { \
-    storage = checked_calloc(element_size, VECTOR_INITIAL_CAPACITY); \
+    storage = checked_calloc(VECTOR_INITIAL_CAPACITY, element_size); \
     storage ## _size = 0; \
     storage ## _capacity = VECTOR_INITIAL_CAPACITY; \
   } while (0)

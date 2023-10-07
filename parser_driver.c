@@ -1,13 +1,11 @@
 #include "lexer.h"
-#include "parser.h"
-#include <stdio.h>
 #include "common.h"
 #include "tokens.h"
 #include "types.h"
 #include "visitor.h"
 #include <assert.h>
-#include <unistd.h>
 #include <stdarg.h>
+#include <unistd.h>
 #include "vendor/klib/khash.h"
 
 extern char *optarg;
@@ -37,7 +35,7 @@ const MachineSizes X86_64_SIZES = {
 };
 
 typedef struct {
-  DeclarationSpecifiers decl_specs;
+  const Type *type;
   void *value;
 } Symbol;
 
@@ -47,6 +45,49 @@ typedef struct SymbolTable {
   kh_SymbolTableMap_t *map;
   struct SymbolTable *parent;
 } SymbolTable;
+
+typedef struct DeclarationSpecifiers {
+  Type *base_type;
+  // TODO: deal with these later... some may be folded into Type.
+  StorageClassSpecifier storage_class;
+  TypeQualifiers type_qualifiers;
+} DeclarationSpecifiers;
+
+// Type *max_type(const Type *t1, const Type *t2);
+// int compare_type(const Type *t2, const Type *t2);
+
+typedef enum {
+  DC_ERROR = 0,
+  DC_SCALAR,
+  DC_ARRAY,
+  DC_FUNCTION,
+  DC_POINTER,
+} DeclaratorKind;
+
+typedef struct Declarator {
+  DeclaratorKind kind;
+  const char *ident;  // 0 means abstract; to pass to visitor for debug printing
+  int ident_string_id;  // to put in the symbol table
+  struct Declarator *child;  // for array and pointer
+  union {
+    struct {
+      int n_params;
+      // parallel arrays
+      DeclarationSpecifiers *param_decl_specs;
+      struct Declarator **param_declarators;
+    };
+    struct {
+      int is_static;
+      TypeQualifiers type_qualifiers;
+      union {
+        void *variable_size_expr;
+        int fixed_size;
+      };
+    };
+  };
+} Declarator;
+
+#define IS_ABSTRACT_DECLARATOR(declarator) !(declarator)->ident
 
 SymbolTable *new_symbol_table() {
   SymbolTable *ret = checked_calloc(1, sizeof(SymbolTable));
@@ -106,18 +147,24 @@ typedef struct {
   // int depth;
   int pos;  // current token
   MachineSizes sizes;
-  MachineSizes alignments;
+  MachineSizes aligns;
   Visitor *visitor;
   SymbolTable *symtab;
   StringPool *string_pool;
   DECLARE_VECTOR(Token, tokens)
 } ParserCont;
 
+typedef struct {
+  int gen_lvalue;  // else gen rvalue
+  int gen_jump;  // else gen rvalue
+  int gen_constexpr;  // ???
+} ParseControl;
+
 ParserCont make_parser_cont(ScannerCont *scont, Visitor *visitor) {
   ParserCont ret = {
     .scont = scont,
     .sizes = X86_64_SIZES,
-    .alignments = X86_64_SIZES,
+    .aligns = X86_64_SIZES,
     .visitor = visitor,
     .symtab = new_symbol_table(),
   };
@@ -148,23 +195,23 @@ void pop_symbol_table(ParserCont *cont) {
   // free(top_tab);
 }
 
-void insert_symbol(SymbolTable *tab, int string_id, DeclarationSpecifiers decl_specs, void *value) {
-  khiter_t map_iter = kh_get_SymbolTableMap(tab->map, string_id);
-  THROWF_IF(map_iter != kh_end(tab->map), EXC_PARSE_SYNTAX, "symbol string_id %d is already defined in current scope", string_id);
+void insert_symbol(SymbolTable *tab, int ident_string_id, const Type *type, void *value) {
+  khiter_t map_iter = kh_get_SymbolTableMap(tab->map, ident_string_id);
+  THROWF_IF(map_iter != kh_end(tab->map), EXC_PARSE_SYNTAX, "symbol ident_string_id %d is already defined in current scope", ident_string_id);
   int ret;
-  map_iter = kh_put_SymbolTableMap(tab->map, string_id, &ret);
+  map_iter = kh_put_SymbolTableMap(tab->map, ident_string_id, &ret);
   THROW_IF(ret == -1, EXC_SYSTEM, "kh_put failed");
 
   kh_val(tab->map, map_iter) = value;
 
   // debug
-  khiter_t get_iter = kh_get_SymbolTableMap(tab->map, string_id);
+  khiter_t get_iter = kh_get_SymbolTableMap(tab->map, ident_string_id);
   THROWF_IF(
     get_iter == kh_end(tab->map),
     EXC_INTERNAL,
-    "could not get string_id %d back from the symbol map hashtable", string_id
+    "could not get ident_string_id %d back from the symbol map hashtable", ident_string_id
   );
-  Symbol *get_value = kh_val(tab->map, string_id);
+  Symbol *get_value = kh_val(tab->map, get_iter);
   assert(value == get_value);
 }
 
@@ -177,10 +224,14 @@ Token peek(ParserCont *cont) {
 
 const char *peek_str(ParserCont *cont) {
   Token tok = peek(cont);
-  if (tok.kind == TOK_IDENT) {
-    return fmtstr("%s[%s]", TOKEN_NAMES[tok.kind], tok.identifier_name);
+  switch (tok.kind) {
+    case TOK_IDENT:
+      return fmtstr("%s[%s]", TOKEN_NAMES[tok.kind], tok.identifier_name);
+    case TOK_INTEGER_LITERAL:
+      return fmtstr("%s[%d]", TOKEN_NAMES[tok.kind], tok.int64_val);
+    default:
+      return TOKEN_NAMES[peek(cont).kind];
   }
-  return TOKEN_NAMES[peek(cont).kind];
 }
 
 void backtrack_to(ParserCont *cont, int new_pos) {
@@ -192,6 +243,15 @@ void backtrack_to(ParserCont *cont, int new_pos) {
   DEBUG_PRINT_EXPR("consumed %s", peek_str(cont)); \
   cont->pos++; \
 } while (0)
+
+#define EXPECT(cont, tok_kind) \
+  THROWF_IF( \
+    peek(cont).kind != (tok_kind), \
+    EXC_PARSE_SYNTAX, \
+    "Expected %s but saw %s", \
+    TOKEN_NAMES[tok_kind], \
+    TOKEN_NAMES[peek(cont).kind] \
+  )
 
 // #define is_parser_eof(cont) (cont)->pos == (cont)->tokens_size;
 
@@ -219,16 +279,22 @@ int _tok_is_in(TokenKind op, ...) {
 #define CALL0(receiver, method) (receiver)->method(receiver)
 
 // parse_primary_expr needs this forward declaration
-void *parse_expr(ParserCont *cont);
+void *parse_expr(ParserCont *cont, ParseControl *ctl);
 
-void *parse_primary_expr(ParserCont *cont) {
+void *parse_primary_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
   Token tok = peek(cont);
   void *ret;
   switch (tok.kind) {
     case TOK_IDENT:
       consume(cont);
-      return get_symbol(cont->symtab, tok.string_id);
+      ret = get_symbol(cont->symtab, tok.string_id);
+      THROWF_IF(!ret,
+        EXC_PARSE_SYNTAX,
+        "identifier %s with string id %d not found in symtab %p",
+        tok.identifier_name, tok.string_id, (void *) cont->symtab
+      );
+      return ret;
     case TOK_FLOAT_LITERAL:
       consume(cont);
       return cont->visitor->visit_float_literal(cont->visitor, tok.double_val);
@@ -237,10 +303,8 @@ void *parse_primary_expr(ParserCont *cont) {
       return cont->visitor->visit_integer_literal(cont->visitor, tok.int64_val);
     case TOK_LEFT_PAREN:
       consume(cont);
-      ret = parse_expr(cont);
-      if (peek(cont).kind != TOK_RIGHT_PAREN) {
-        THROWF(EXC_PARSE_SYNTAX, "Expected ) but got %s", peek_str(cont));
-      }
+      ret = parse_expr(cont, ctl);
+      EXPECT(cont, TOK_RIGHT_PAREN);
       consume(cont);
       return ret;
     default:
@@ -248,88 +312,111 @@ void *parse_primary_expr(ParserCont *cont) {
   }
 }
 
-void *parse_postfix_expr(ParserCont *cont) {
-  PRINT_ENTRY();
-  return parse_primary_expr(cont);
+void *parse_function_call_rest(ParserCont *cont, void *function) {
+  assert(peek(cont).kind == TOK_LEFT_PAREN);
+  consume(cont);
+  assert(0 && "Unimplemented");
 }
 
-void *parse_unary_expr(ParserCont *cont) {
+// the PARSER should recursively get the array reference.
+void *parse_postfix_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  void *ret = parse_postfix_expr(cont);
-  // cont->visitor->set_property(ret, PROP_IS_UNARY_EXPR, 1);
+  void *left = parse_primary_expr(cont, ctl);
+  void *right = 0;
+  for (;;) {
+    TokenKind op = peek(cont).kind;
+    switch (op) {
+      case TOK_LEFT_BRACKET:
+        consume(cont);
+        right = parse_expr(cont, ctl);
+        left = CALL(cont->visitor, visit_array_reference, left, right, ctl->gen_lvalue);
+        EXPECT(cont, TOK_RIGHT_BRACKET);
+        consume(cont);
+        break;
+      case TOK_LEFT_PAREN:
+        return parse_function_call_rest(cont, left);
+      default:
+        return left;
+    }
+  }
+}
+
+void *parse_unary_expr(ParserCont *cont, ParseControl *ctl) {
+  PRINT_ENTRY();
+  void *ret = parse_postfix_expr(cont, ctl);
   return ret;
 }
 
-void *parse_cast_expr(ParserCont *cont) {
+void *parse_cast_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  return(parse_unary_expr(cont));
+  return parse_unary_expr(cont, ctl);
 }
 
 #define MAKE_BINOP_PARSER(parse_func, next_parse_func, continue_pred) \
-void *parse_func(ParserCont *cont) { \
+void *parse_func(ParserCont *cont, ParseControl *ctl) { \
   PRINT_ENTRY(); \
-  void *left = next_parse_func(cont); \
+  void *left = next_parse_func(cont, ctl); \
   void *right = 0; \
   for (;;) { \
-    Token op = peek(cont); \
+    TokenKind op = peek(cont).kind; \
     if (!continue_pred(op)) \
       break; \
     consume(cont); \
-    right = next_parse_func(cont); \
-    left = cont->visitor->visit_binop(cont->visitor, op.kind, left, right); \
+    right = next_parse_func(cont, ctl); \
+    left = cont->visitor->visit_binop(cont->visitor, op, left, right); \
   } \
   return left; \
 }
 
-#define multiplicative_pred(op) (op.kind == TOK_STAR_OP || op.kind == TOK_DIV_OP || op.kind == TOK_MOD_OP)
+#define multiplicative_pred(op) tok_is_in(op, TOK_STAR_OP, TOK_DIV_OP, TOK_MOD_OP)
 MAKE_BINOP_PARSER(parse_multiplicative_expr, parse_cast_expr, multiplicative_pred)
 
-#define additive_pred(op) (op.kind == TOK_ADD_OP || op.kind == TOK_SUB_OP)
+#define additive_pred(op) tok_is_in(op, TOK_ADD_OP, TOK_SUB_OP)
 MAKE_BINOP_PARSER(parse_additive_expr, parse_multiplicative_expr, additive_pred)
 
-void *parse_shift_expr(ParserCont *cont) {
+void *parse_shift_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  return parse_additive_expr(cont);
+  return parse_additive_expr(cont, ctl);
 }
 
-void *parse_relational_expr(ParserCont *cont) {
+void *parse_relational_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  return parse_shift_expr(cont);
+  return parse_shift_expr(cont, ctl);
 }
 
-void *parse_equality_expr(ParserCont *cont) {
+void *parse_equality_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  return parse_relational_expr(cont);
+  return parse_relational_expr(cont, ctl);
 }
 
-void *parse_and_expr(ParserCont *cont) {
+void *parse_and_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  return parse_equality_expr(cont);
+  return parse_equality_expr(cont, ctl);
 }
 
-void *parse_exclusive_or_expr(ParserCont *cont) {
+void *parse_exclusive_or_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  return parse_and_expr(cont);
+  return parse_and_expr(cont, ctl);
 }
 
-void *parse_inclusive_or_expr(ParserCont *cont) {
+void *parse_inclusive_or_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  return parse_exclusive_or_expr(cont);
+  return parse_exclusive_or_expr(cont, ctl);
 }
 
-void *parse_logical_and_expr(ParserCont *cont) {
+void *parse_logical_and_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  return parse_inclusive_or_expr(cont);
+  return parse_inclusive_or_expr(cont, ctl);
 }
 
-void *parse_logical_or_expr(ParserCont *cont) {
+void *parse_logical_or_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  return parse_logical_and_expr(cont);
+  return parse_logical_and_expr(cont, ctl);
 }
 
-void *parse_conditional_expr(ParserCont *cont) {
+void *parse_conditional_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  return parse_logical_or_expr(cont);
+  return parse_logical_or_expr(cont, ctl);
 }
 
 #define scalar_type_specifier_list TOK_void, TOK_char, TOK_short, TOK_int, TOK_long, TOK_float, TOK_double, \
@@ -433,33 +520,33 @@ label_finish:
     parsed_type_tok = TOK_int;
   }
   int is_unsigned = parsed_unsigned == 1;
-  int int_size = -1, int_alignment = -1;
+  int int_size = -1, int_align = -1;
   switch (parsed_long_short) {
-    case -1: int_size = cont->sizes.short_size; int_alignment = cont->alignments.short_size; break;
-    case 0: int_size = cont->sizes.int_size; int_alignment = cont->alignments.int_size; break;
-    case 1: int_size = cont->sizes.long_size; int_alignment = cont->alignments.long_size; break;
-    case 2: int_size = cont->sizes.long_long_size;  int_alignment = cont->alignments.long_long_size;break;
+    case -1: int_size = cont->sizes.short_size; int_align = cont->aligns.short_size; break;
+    case 0: int_size = cont->sizes.int_size; int_align = cont->aligns.int_size; break;
+    case 1: int_size = cont->sizes.long_size; int_align = cont->aligns.long_size; break;
+    case 2: int_size = cont->sizes.long_long_size;  int_align = cont->aligns.long_long_size;break;
     default: assert(0 && "Unreachable!");
   }
   if (parsed_type_tok == TOK_char) {
-    int_size = cont->sizes.char_size; int_alignment = cont->alignments.char_size;
+    int_size = cont->sizes.char_size; int_align = cont->aligns.char_size;
   }
   assert(int_size != -1 && "Oops");
-  assert(int_alignment != -1 && "Oops");
+  assert(int_align != -1 && "Oops");
 
   Type *ty = checked_calloc(1, sizeof(Type));
   switch (parsed_type_tok) {
     case TOK_void: ty->kind = TY_VOID; break;
-    case TOK_char: case TOK_int: ty->kind = TY_INTEGER; ty->size = int_size; ty->alignment = int_alignment; ty->is_unsigned = is_unsigned; break;
-    case TOK_float: ty->kind = TY_FLOAT; ty->size = cont->sizes.float_size; ty->alignment = cont->alignments.float_size; break;
+    case TOK_char: case TOK_int: ty->kind = TY_INTEGER; ty->size = int_size; ty->align = int_align; ty->is_unsigned = is_unsigned; break;
+    case TOK_float: ty->kind = TY_FLOAT; ty->size = cont->sizes.float_size; ty->align = cont->aligns.float_size; break;
     case TOK_double:
       ty->kind = TY_FLOAT;
       ty->size = (parsed_long_short == 1 ? cont->sizes.long_double_size : cont->sizes.double_size);
-      ty->alignment = (parsed_long_short == 1 ? cont->alignments.long_double_size : cont->alignments.double_size);
+      ty->align = (parsed_long_short == 1 ? cont->aligns.long_double_size : cont->aligns.double_size);
       break;
     default: assert(0 && "Unreachable!");
   }
-  return (DeclarationSpecifiers) {.type = ty};
+  return (DeclarationSpecifiers) {.base_type = ty};
 }
 
 #define is_assignment_op(op) tok_is_in( \
@@ -467,65 +554,90 @@ label_finish:
   TOK_RIGHT_ASSIGN, TOK_AND_ASSIGN, TOK_XOR_ASSIGN, TOK_OR_ASSIGN \
 )
 
-// An assignment_expr is either a conditional_expr or starts with an unary_expr. To resolve the ambiguity, notice that
-// a conditional_expr expands to an unary_expr. Therefore, we start parsing as a conditional_expr and then check if the
-// returned value happens to be an unary_expr (TODO). The visitor will have to keep track of this in visit_cast_expr.
-
-// TODO: The logic above is incorrect; you should make a fully predictive parser.
-// NB last note: FIRST(cast_expression) is (. Predictive parser is to just look for a (. 
-
-void *parse_assignment_expr(ParserCont *cont) {
+// x = y = z = 1  <=>  x = (y = (z = 1))
+void *parse_assignment_expr(ParserCont *cont, ParseControl *ctl) {
   PRINT_ENTRY();
-  void *left = parse_conditional_expr(cont);  // which could be an unary expression
-  void *right = 0;
-  for (;;) {
-    TokenKind op = peek(cont).kind;
-    if (!is_assignment_op(op))
-      break;
-    // Now we know this is an assignment
-    consume(cont);
-    right = parse_assignment_expr(cont);
-    left = cont->visitor->visit_assign(cont->visitor, op, left, right);
+  ctl->gen_lvalue = 1;
+  void *left = parse_conditional_expr(cont, ctl);  // which could be an unary expression
+  if (ctl->gen_lvalue != 1) {
+    // could not generate an lvalue => not an unary expression
+    return left;
   }
-  return left;
+
+  TokenKind op = peek(cont).kind;
+  if (!is_assignment_op(op))
+    return left;
+
+  consume(cont);
+  assert(ctl->gen_lvalue);
+  void *right = parse_assignment_expr(cont, ctl);
+  return CALL(cont->visitor, visit_assign, TOK_ASSIGN_OP, left, right);
 }
 
-Declarator *parse_declarator(ParserCont *cont) {
+// nesting function declarators not supported yet
+#define is_array_declarator_first(op) (tok_is_in(op, TOK_LEFT_BRACKET))
+void parse_array_declarator_rest(ParserCont *cont, Declarator *declarator) {
+  PRINT_ENTRY();
+  // only arrays of arrays; don't be declaring arrays of function pointers now
+  assert(peek(cont).kind == TOK_LEFT_BRACKET);
+  consume(cont);
+  declarator->kind = DC_ARRAY;
+
+  THROW_IF(peek(cont).kind != TOK_INTEGER_LITERAL, EXC_INTERNAL, "Only fixed size arrays supported for now.");
+  Token size_tok = peek(cont);
+  THROW_IF(size_tok.int64_val < 0, EXC_PARSE_SYNTAX, "array size must be nonnegative.");
+  consume(cont);
+
+  declarator->fixed_size = (int) size_tok.int64_val;
+  EXPECT(cont, TOK_RIGHT_BRACKET);
+  consume(cont);
+
+  if (is_array_declarator_first(peek(cont).kind)) {
+    declarator->child = checked_calloc(1, sizeof(Declarator)); 
+    parse_array_declarator_rest(cont, declarator->child);
+  }
+}
+
+#define is_declarator_or_abstract_declarator_first(op) tok_is_in(op, TOK_STAR_OP, TOK_LEFT_PAREN, TOK_IDENT)
+Declarator *parse_declarator_or_abstract_declarator(ParserCont *cont) {
   PRINT_ENTRY();
   Declarator *ret = calloc(1, sizeof(Declarator));
 
   if (peek(cont).kind == TOK_STAR_OP) {
-    ret->is_pointer = 1;
     consume(cont);
+    ret->kind = DC_POINTER;
+    ret->child = parse_declarator_or_abstract_declarator(cont);
+    return ret;
   }
   if (peek(cont).kind == TOK_LEFT_PAREN) {
     consume(cont);
-    ret = parse_declarator(cont);
-    THROW_IF(peek(cont).kind != TOK_RIGHT_PAREN, EXC_PARSE_SYNTAX, "Expected ) to close declarator");
+    ret = parse_declarator_or_abstract_declarator(cont);
+    EXPECT(cont, TOK_RIGHT_PAREN);
     consume(cont);
     return ret;
   }
-  THROW_IF(peek(cont).kind != TOK_IDENT, EXC_PARSE_SYNTAX, "Expected identifier");
-  Token ident = peek(cont);
   ret->kind = DC_SCALAR;  // scalar until proven otherwise
-  ret->ident_string_id = ident.string_id;
-  ret->ident_string = ident.identifier_name;
-  consume(cont);
 
-  DECLARE_VECTOR(DeclarationSpecifiers, param_decl_specs)
-  DECLARE_VECTOR(Declarator *, param_declarators)
+  if (peek(cont).kind == TOK_IDENT) {
+    Token ident = peek(cont);
+    ret->ident_string_id = ident.string_id;
+    ret->ident = ident.identifier_name;
+    consume(cont);
+  }
 
-  NEW_VECTOR(param_decl_specs, sizeof(DeclarationSpecifiers));
-  NEW_VECTOR(param_declarators, sizeof(Declarator *));
-  
   if (peek(cont).kind == TOK_LEFT_PAREN) {
     // parse function declarator
     ret->kind = DC_FUNCTION;
     consume(cont);
 
+    DECLARE_VECTOR(DeclarationSpecifiers, param_decl_specs)
+    DECLARE_VECTOR(Declarator *, param_declarators)
+    NEW_VECTOR(param_decl_specs, sizeof(DeclarationSpecifiers));
+    NEW_VECTOR(param_declarators, sizeof(Declarator *));
+  
     for (;;) {
       DeclarationSpecifiers curr_decl_specs = parse_declaration_specifiers(cont);
-      Declarator *curr_declarator = parse_declarator(cont);
+      Declarator *curr_declarator = parse_declarator_or_abstract_declarator(cont);
       APPEND_VECTOR(param_decl_specs, curr_decl_specs);
       APPEND_VECTOR(param_declarators, curr_declarator);
 
@@ -535,56 +647,205 @@ Declarator *parse_declarator(ParserCont *cont) {
       consume(cont);
     }
     assert(VECTOR_SIZE(param_decl_specs) == VECTOR_SIZE(param_declarators));
-    THROW_IF(peek(cont).kind != TOK_RIGHT_PAREN, EXC_PARSE_SYNTAX, "Expected ) to close function declarator");
-
+    EXPECT(cont, TOK_RIGHT_PAREN);
     consume(cont);
     ret->n_params = VECTOR_SIZE(param_decl_specs);
     ret->param_decl_specs = param_decl_specs;
     ret->param_declarators = param_declarators;
+  } else if (peek(cont).kind == TOK_LEFT_BRACKET) {
+    parse_array_declarator_rest(cont, ret);
   }
-  // arrays not supported
   return ret;
 }
 
-void *parse_initializer(ParserCont *cont) {
+int parse_array_designator(ParserCont *cont) {
   PRINT_ENTRY();
-  return parse_assignment_expr(cont);
+  EXPECT(cont, TOK_LEFT_BRACKET);
+  consume(cont);
+  // only constants, not constexpr, supported now
+  EXPECT(cont, TOK_INTEGER_LITERAL);
+  int ret = peek(cont).int64_val;
+  consume(cont);
+  EXPECT(cont, TOK_RIGHT_BRACKET);
+  consume(cont);
+  return ret;
 }
 
-void *visit_and_insert_declaration(ParserCont *cont, DeclarationSpecifiers decl_specs, Declarator *declarator) {
-    void *declaration = cont->visitor->visit_declaration(cont->visitor, decl_specs, declarator);
-    insert_symbol(cont->symtab, declarator->ident_string_id, decl_specs, declaration);
-    return declaration;
+void parse_array_designation(ParserCont *cont, const Type **p_type, int *p_offset) {
+  PRINT_ENTRY();
+  // first designator only changes offset, not type
+  int index = parse_array_designator(cont);
+  int child_size = cont->visitor->total_size((*p_type)->child_type);
+  *p_offset += index * child_size;
+
+  while (peek(cont).kind == TOK_LEFT_BRACKET) {
+    *p_type = (*p_type)->child_type;
+    child_size = cont->visitor->total_size((*p_type)->child_type);
+    index = parse_array_designator(cont);
+    *p_offset += index * child_size;
+  }
+}
+
+void parse_initializer_list(ParserCont *cont, void *base_object, const Type *type, int offset) {
+  PRINT_ENTRY();
+  THROW_IF(!type->child_type, EXC_PARSE_SYNTAX, "Initializer list has more nesting levels than base type.");
+  EXPECT(cont, TOK_LEFT_BRACE);
+  consume(cont);
+
+  const Type *element_type = type;
+  // NONE OF THIS SUPPORTS STRUCTS UGH
+  while (!IS_SCALAR_TYPE(element_type)) {
+    element_type = element_type->child_type;
+  }
+  int element_size = element_type->size;
+
+  const Type *next_type = 0;
+  int next_offset = offset;
+  for (;;) {
+    TokenKind op = peek(cont).kind;
+    switch (op) {
+      case TOK_RIGHT_BRACE:  // trailing comma or empty
+        goto label_finish;
+      case TOK_LEFT_BRACKET:
+        next_type = type;
+        next_offset = offset;
+        // A a new array designator resets the offset to the beginning of this subobject.
+        parse_array_designation(cont, &next_type, &next_offset);
+        EXPECT(cont, TOK_ASSIGN_OP);
+        consume(cont);
+        break;
+      case TOK_DOT_OP:
+        assert(0 && "Unimplemented!");
+        break;
+      default:
+        break;
+    }
+
+    if (peek(cont).kind == TOK_LEFT_BRACE) {
+      assert(next_type && next_offset >= 0);
+      parse_initializer_list(cont, base_object, next_type->child_type, next_offset);
+      /* 6.7.9.20: "If there are fewer initializers, in a brace-enclosed list than there are elements [...] the 
+        remainder of the aggregate shall be initialized implicitly the same as objects that have static storage 
+        duration
+      */
+      next_offset = offset + cont->visitor->total_size(next_type->child_type);
+    } else {
+      if (peek(cont).kind == TOK_INTEGER_LITERAL) {
+        fprintf(stderr, "DEBUG: initializer list setting offset %d to %lld\n", offset, peek(cont).int64_val);
+      } else {
+        fprintf(stderr, "DEBUG: initializer list setting offset %d to some expression", offset);
+      }
+      ParseControl ctl = {0};
+      void *right = parse_assignment_expr(cont, &ctl);
+      CALL(cont->visitor, visit_assign_offset, base_object, next_offset, right);
+      next_offset += element_size;
+    }
+
+    if (peek(cont).kind != TOK_COMMA)
+      break;
+
+    consume(cont);
+  }
+label_finish:
+  EXPECT(cont, TOK_RIGHT_BRACE);
+  consume(cont);
+}
+
+void parse_initializer(ParserCont *cont, void *left) {
+  PRINT_ENTRY();
+  if (peek(cont).kind == TOK_LEFT_BRACE) {
+    CALL(cont->visitor, visit_zero_object, left);
+    const Type *base_type = cont->visitor->type_of(left);
+    parse_initializer_list(cont, left, base_type, 0);
+    return;
+  }
+  ParseControl ctl = {0};
+  void *right = parse_assignment_expr(cont, &ctl);
+  CALL(cont->visitor, visit_assign, TOK_ASSIGN_OP, left, right);
+}
+
+Type *new_variable_array_type(Type *child_type, Declarator *declarator) {
+  assert(0 && "Unimplemented!");
+}
+
+Type *new_array_type(Type *base_type, Declarator *declarator) {
+  assert(declarator->kind == DC_ARRAY);
+
+  Type *ret = checked_calloc(1, sizeof(Type));
+  ret->kind = TY_ARRAY;
+  ret->size = declarator->fixed_size;
+  if (declarator->child) {
+    // recursive case
+    ret->child_type = new_array_type(base_type, declarator->child);
+  } else {
+    // base case
+    ret->child_type = base_type;  // from declaration specifiers
+  }
+  return ret;
+}
+
+Type *new_type_from_declaration(DeclarationSpecifiers decl_specs, Declarator *declarator) {
+  Type *ret = 0;
+  switch (declarator->kind) {
+    case DC_SCALAR:
+      ret = checked_calloc(1, sizeof(Type));
+      ret = decl_specs.base_type;
+      break;
+    case DC_ARRAY:
+      assert(IS_SCALAR_TYPE(decl_specs.base_type) && !decl_specs.base_type->child_type);
+      ret = new_array_type(decl_specs.base_type, declarator);
+      break;
+    default:
+      THROWF(EXC_INTERNAL, "Unsupported declarator kind %d", declarator->kind);
+  }
+  return ret;
+}
+
+void *finish_declaration(ParserCont *cont, DeclarationSpecifiers decl_specs, Declarator *declarator) {
+  assert(!IS_ABSTRACT_DECLARATOR(declarator));
+
+  Type *type = new_type_from_declaration(decl_specs, declarator);
+  void *declaration = CALL(cont->visitor, visit_declaration, type, declarator->ident);
+  insert_symbol(cont->symtab, declarator->ident_string_id, type, declaration);
+  fprintf(stderr, "DEBUG: Declared variable %s with string id %d in symtab %p\n",
+    declarator->ident, declarator->ident_string_id, (void *) cont->symtab);
+  return declaration;
 }
 
 void parse_declaration_rest(ParserCont *cont, DeclarationSpecifiers decl_specs, Declarator *first_declarator) {
   PRINT_ENTRY();
+  THROW_IF(IS_ABSTRACT_DECLARATOR(first_declarator), EXC_PARSE_SYNTAX, "declaration must have identifier");
   Declarator *declarator = first_declarator;
+  void *declaration;
   for (;;) {
     TokenKind op = peek(cont).kind;
     switch (op) {
       case TOK_SEMI:
         consume(cont);
-        visit_and_insert_declaration(cont, decl_specs, declarator);
+        finish_declaration(cont, decl_specs, declarator);
         return;
       case TOK_COMMA:
         consume(cont);
-        visit_and_insert_declaration(cont, decl_specs, declarator);
-        declarator = parse_declarator(cont);
-        break;  // more declarators to come
+        finish_declaration(cont, decl_specs, declarator);
+        break;  // maybe more declarators to come
       case TOK_ASSIGN_OP:
         consume(cont);
-        void *lhs = visit_and_insert_declaration(cont, decl_specs, declarator);
-        // TODO: Support initializer lists differently... it won't "just" be delegating to visit_assign.
-        void *rhs = parse_initializer(cont);
-        cont->visitor->visit_assign(cont->visitor, TOK_ASSIGN_OP, lhs, rhs);
-        // consume the comma there, to prevent the previous rule from declaring twice
+        declaration = finish_declaration(cont, decl_specs, declarator);
+        parse_initializer(cont, declaration);
+        // consume comma here so we don't trigger the comma action twice
         if (peek(cont).kind == TOK_COMMA)
           consume(cont);
         break;
       default:
         THROWF(EXC_PARSE_SYNTAX, "Unexpected token %s", TOKEN_NAMES[op]);
     }
+    if (peek(cont).kind == TOK_SEMI) {
+      consume(cont);
+      return;
+    }
+
+    // prepare loop for next declarator
+    declarator = parse_declarator_or_abstract_declarator(cont);
   }
 }
 
@@ -592,15 +853,16 @@ void parse_declaration_rest(ParserCont *cont, DeclarationSpecifiers decl_specs, 
 void parse_declaration(ParserCont *cont) {
   PRINT_ENTRY();
   DeclarationSpecifiers decl_specs = parse_declaration_specifiers(cont);
-  Declarator *first_declarator = parse_declarator(cont);
+  Declarator *first_declarator = parse_declarator_or_abstract_declarator(cont);
   parse_declaration_rest(cont, decl_specs, first_declarator);
 }
 
 
 void *parse_expression_statement(ParserCont *cont) {
   PRINT_ENTRY();
-  void *expr = parse_expr(cont);
-  THROW_IF(peek(cont).kind != TOK_SEMI, EXC_PARSE_SYNTAX, "expected ;");
+  ParseControl ctl = {0};
+  void *expr = parse_expr(cont, &ctl);
+  EXPECT(cont, TOK_SEMI);
   consume(cont);
   return expr;
 }
@@ -608,12 +870,13 @@ void *parse_expression_statement(ParserCont *cont) {
 #define is_jump_statement_first(op) tok_is_in(op, TOK_goto, TOK_continue, TOK_break, TOK_return)
 void parse_jump_statement(ParserCont *cont) {
   TokenKind op = peek(cont).kind;
+  ParseControl ctl = { .gen_jump = 1 };
   void *retval = 0;
   switch (op) {
     case TOK_return:
       consume(cont);
       if (peek(cont).kind != TOK_SEMI) {
-        retval = parse_expr(cont);
+        retval = parse_expr(cont, &ctl);
       }
       THROW_IF(peek(cont).kind != TOK_SEMI, EXC_PARSE_SYNTAX, "Expected ; after return");
       consume(cont);
@@ -642,6 +905,7 @@ void parse_statement(ParserCont *cont) {
 void parse_block_item(ParserCont *cont) {
   PRINT_ENTRY()
   TokenKind op = peek(cont).kind;
+  CALL(cont->visitor, emit_comment, "%s:%d", peek(cont).filename, peek(cont).line_start + 1);
   if (is_declaration_first(op)) {
     fprintf(stderr, "parse_block_item saw %s; parsing as declaration\n", TOKEN_NAMES[op]);
     parse_declaration(cont);
@@ -673,18 +937,21 @@ void parse_compound_statement(ParserCont *cont) {
 void parse_function_definition_rest(ParserCont *cont, DeclarationSpecifiers decl_specs, Declarator *func_declarator) {
   PRINT_ENTRY();
   assert(func_declarator->kind == DC_FUNCTION);
-  CALL(cont->visitor, visit_function_definition_start, decl_specs, func_declarator);
+  CALL(cont->visitor, visit_function_definition_start, func_declarator->ident);
   push_new_symbol_table(cont);
   for (int i = 0; i < func_declarator->n_params; i++) {
     DeclarationSpecifiers param_decl_specs = func_declarator->param_decl_specs[i];
     Declarator *param_declarator = func_declarator->param_declarators[i];
+    Type *param_type = new_type_from_declaration(param_decl_specs, param_declarator);
     void *param_value = CALL(
       cont->visitor,
       visit_function_definition_param,
-      param_decl_specs,
-      param_declarator
+      param_type,
+      param_declarator->ident
     );
-    insert_symbol(cont->symtab, param_declarator->ident_string_id, param_decl_specs, param_value);
+    insert_symbol(cont->symtab, param_declarator->ident_string_id, param_type, param_value);
+    fprintf(stderr, "DEBUG: Declared function parameter %s with string id %d in symtab %p\n",
+      param_declarator->ident, param_declarator->ident_string_id, (void *) cont->symtab);
   }
   parse_compound_statement_rest(cont);
   CALL0(cont->visitor, visit_function_end);
@@ -698,7 +965,7 @@ void parse_function_definition_rest(ParserCont *cont, DeclarationSpecifiers decl
 void parse_external_declaration(ParserCont *cont) {
   PRINT_ENTRY();
   DeclarationSpecifiers decl_specs = parse_declaration_specifiers(cont);
-  Declarator *first_declarator = parse_declarator(cont);
+  Declarator *first_declarator = parse_declarator_or_abstract_declarator(cont);
 
   if (peek(cont).kind == TOK_LEFT_BRACE) {
     consume(cont);
@@ -722,7 +989,7 @@ void parse_translation_unit(ParserCont *cont) {
 // visit so that all of the operands get joined to the tree.
 //
 // So in the end this is just any other binary operator.
-#define expr_pred(op) (op.kind == TOK_COMMA)
+#define expr_pred(op) (op == TOK_COMMA)
 MAKE_BINOP_PARSER(parse_expr, parse_assignment_expr, expr_pred)
 
 // extern Visitor *new_ssa_visitor(FILE *out);
@@ -752,7 +1019,7 @@ static void parse_start(FILE *in, const char *filename, Visitor *visitor) {
     }
   } else {
     PRINT_EXCEPTION();
-    exit(1);
+    abort();
   }
 }
 

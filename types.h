@@ -15,6 +15,7 @@ typedef struct {
 struct Type;
 
 typedef enum {
+  TY_ERROR = 0,
   TY_VOID,
   TY_INTEGER,
   TY_FLOAT,
@@ -39,56 +40,25 @@ typedef struct {
 struct SymbolTable;
 typedef struct Type {
   TypeKind kind;
-  int size;
-  int alignment;
+  // TODO: Deal with more abstractly later... also should be an ADT.
+  int size;  // For primitive types and pointer, number of bytes. For arrays, number of elements.
+  void *size_expr;  // UGH for arrays
+  int align;
   union {
     // for numbers
     int is_unsigned;
     // for arrays and pointers
-    struct Type *base_type;
+    const struct Type *child_type;
     // for structs
     struct SymbolTable *symtab;  // TODO: not a real symboltable; just a hash from names to indices.
     // for functions
     struct {
       int n_params;
       const struct Type *return_type;
-      struct DeclarationSpecifiers *declaration_specifiers;
+      const struct Type **param_types;
     };
   };
 } Type;
 
-typedef struct DeclarationSpecifiers {
-  StorageClassSpecifier storage_class;
-  Type *type;
-  TypeQualifiers type_qualifiers;
-} DeclarationSpecifiers;
+#define IS_SCALAR_TYPE(type) ((type)->kind == TY_INTEGER || (type)->kind == TY_FLOAT || (type)->kind == TY_POINTER)
 
-// Type *max_type(const Type *t1, const Type *t2);
-// int compare_type(const Type *t2, const Type *t2);
-
-typedef enum {
-  DC_SCALAR,
-  DC_ARRAY,
-  DC_FUNCTION,
-} DeclaratorKind;
-
-typedef struct Declarator {
-  DeclaratorKind kind;
-  int ident_string_id;  // -1 means abstract
-  const char *ident_string;
-  int is_pointer;
-  struct Declarator *parent;
-  union {
-    struct {
-      int n_params;
-      // parallel arrays
-      DeclarationSpecifiers *param_decl_specs;
-      struct Declarator **param_declarators;
-    };
-    struct {
-      int is_static;
-      TypeQualifiers type_qualifiers;
-      void *size_expr;
-    };
-  };
-} Declarator;

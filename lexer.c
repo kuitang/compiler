@@ -154,6 +154,8 @@ static Token make_partial_token(const ScannerCont *cont, TokenKind kind) {
   return (Token) {
     .kind = kind,
     .filename = cont->filename,
+    .pos_start = cont->saved_pos,
+    .pos_end = cont->pos,
     .line_start = cont->saved_line,
     .line_end = cont->line,
     .col_start = cont->saved_col,

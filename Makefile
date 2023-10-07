@@ -71,6 +71,8 @@ parser_driver: parser_driver.c x86_64_visitor.o lexer.o common.o
 
 lexer_driver: lexer_driver.c lexer.o common.o
 
+x86_64_visitor.o: x86_64_visitor.c common.h
+
 lexer.o: lexer.c common.h
 
 common.o: common.c common.h
@@ -99,5 +101,5 @@ common.o: common.c common.h
 
 .PHONY: clean run
 clean:
-	rm -rf *.i *.s *.o *.gch *.dSYM *driver kuicc a.out golden/*.s
+	rm -rf *.i *.s *.o *.gch *.dSYM *driver driver_clang kuicc a.out golden/*.s
 
