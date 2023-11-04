@@ -6,6 +6,8 @@
 *.DS_Store
 *dSYM*
 *.dSYM/
+*main
+*driver*
 *.tmp*
 a.out
 bin/

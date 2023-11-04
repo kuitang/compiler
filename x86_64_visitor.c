@@ -55,25 +55,13 @@ typedef struct {
   const Type *curr_func_return_type;
 } x86_64_Visitor;
 
-int next_aligned_offset(int curr_offset, int size, int alignment) {
-  int new_offset = curr_offset + size;
-  new_offset += new_offset % alignment;
-  return new_offset;
-}
-
 const Type *type_of(const x86_64_Value *val) {
   return val->type;
 }
 
-// TODO: Upgrade this to an expr
 static int total_size(const Type *type) {
-  if (IS_SCALAR_TYPE(type)) {
-    return type->size;
-  }
-  if (type->kind == TY_ARRAY) {
-    return type->size * total_size(type->child_type);
-  }
-  THROWF(EXC_INTERNAL, "Unsupported type kind %d", type->kind);
+  // TODO: Support variable sized arrays, and structs with flexible members
+  return type->kind == TY_ARRAY ? type->size * total_size(type->child_type) : type->size;
 }
 
 static int child_size(const Type *type) {
@@ -412,9 +400,10 @@ static void *visit_binop(x86_64_Visitor *v, TokenKind op, x86_64_Value *left, x8
       copy_to_accum(v, left);
       char *ct;
       switch (size) {
-        case 2: ct = "cwtd"; break;
-        case 4: ct = "cltd"; break;
-        case 8: ct = "cqto"; break;
+        case 1: ct = "cbw"; break;
+        case 2: ct = "cwd"; break;
+        case 4: ct = "cdq"; break;
+        case 8: ct = "cqo"; break;
         default: THROWF(EXC_INTERNAL, "wrong size for division: %d", size);
       }
       fprintf(v->out, "\t%s\n", ct);
@@ -520,7 +509,7 @@ static x86_64_Value *visit_array_reference(x86_64_Visitor *v, x86_64_Value *left
   }
 
   x86_64_Value *ret = checked_calloc(1, sizeof(x86_64_Value));
-  memcpy(ret, left, sizeof(x86_64_Value));
+  checked_memcpy(ret, left, sizeof(x86_64_Value));
 
   // recursive case: update the index
   // first, adjust type to be the child type, since we are one level down
@@ -568,6 +557,24 @@ static x86_64_Value *visit_array_reference(x86_64_Visitor *v, x86_64_Value *left
     ret->index.index_const = -1;
   }
   return ret;
+}
+
+static x86_64_Value *visit_struct_reference_base(x86_64_Visitor *v, x86_64_Value *left, const Member *member) {
+  assert(left->location_kind != LOC_INDEXED);
+  x86_64_Value *ret = checked_calloc(1, sizeof(x86_64_Value));
+  ret->type = member->type;
+  ret->location_kind = LOC_INDEXED;
+  ret->index.base = left;
+  ret->index.index_const = member->offset;
+  ret->debug_name = fmtstr("%s.%s", left->debug_name, member->ident);
+  return ret;
+}
+
+static x86_64_Value *visit_struct_reference(x86_64_Visitor *v, x86_64_Value *left, const Member *member) {
+  if (left->location_kind != LOC_INDEXED) {
+    return visit_struct_reference_base(v, left, member);
+  }
+  assert(0 && "Unimplemented!");
 }
 
 static void visit_return(x86_64_Visitor *v, x86_64_Value *retval) {
@@ -623,10 +630,23 @@ static void emit_comment(x86_64_Visitor *v, const char *fmt, ...) {
 
 Visitor *new_x86_64_visitor(FILE *out) {
   x86_64_Visitor *v = checked_calloc(1, sizeof(x86_64_Visitor));
+  INSTALL_VISITOR_METHODS(v)
+
+  // Create the primitive types
+  Visitor *super = (Visitor *) v;
+  super->char_type        = (Type) { .kind = TY_INTEGER, .size = 1,  .align = 1  };
+  super->short_type       = (Type) { .kind = TY_INTEGER, .size = 2,  .align = 2  };
+  super->int_type         = (Type) { .kind = TY_INTEGER, .size = 4,  .align = 4  };
+  super->long_type        = (Type) { .kind = TY_INTEGER, .size = 8,  .align = 8  };
+  super->long_long_type   = (Type) { .kind = TY_INTEGER, .size = 8,  .align = 8  };
+  super->float_type       = (Type) { .kind = TY_FLOAT,   .size = 4,  .align = 4  };
+  super->double_type      = (Type) { .kind = TY_FLOAT,   .size = 8,  .align = 8  };
+  super->long_double_type = (Type) { .kind = TY_FLOAT,   .size = 16, .align = 16 };
+  MAKE_ALL_UNSIGNED_TYPES(super);
+
   v->curr_rbp_offset = 0;
   v->curr_temp_id = 0;
   v->out = out;
-  INSTALL_VISITOR_METHODS(v)
   time_t curr_time = time(0);
   char timebuf[27];
   ctime_r(&curr_time, timebuf);

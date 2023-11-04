@@ -1,4 +1,4 @@
-#import <stdio.h>
+#include <stdio.h>
 
 extern int my_func();
 

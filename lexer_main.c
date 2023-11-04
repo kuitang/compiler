@@ -1,13 +1,12 @@
-#include "lexer.h"
 #include <stdio.h>
+#include "lexer.h"
 #include "common.h"
 
 static void parse_start(FILE *in, const char *filename) {
-  StringPool *pool = new_string_pool();
-  ScannerCont cont = make_scanner_cont(in, filename, pool);
+  ScannerCont *cont = new_scanner_cont(in, filename);
   if (setjmp(global_exception_handler) == 0) {
     while (1) {
-      Token tok = consume_next_token(&cont);
+      Token tok = consume_next_token(cont);
       if (tok.kind == TOK_END_OF_FILE) {
         break;
       }
@@ -18,15 +17,14 @@ static void parse_start(FILE *in, const char *filename) {
         TOKEN_NAMES[tok.kind]
       );
       switch (tok.kind) {
-        case TOK_STRING_LITERAL:
-        case TOK_IDENT:
-          fprint_string_repr(stdout, pool->string_val[tok.string_id]);
+        case TOK_STRING_LITERAL: case TOK_IDENT:
+          printf("%d:%s", tok.string_id, tok.string_val);
           break;
         case TOK_INTEGER_LITERAL:
-          printf("%lld", tok.constant_val.int64_val);
+          printf("%lld", tok.int64_val);
           break;
         case TOK_FLOAT_LITERAL:
-          printf("%g", tok.constant_val.double_val);
+          printf("%g", tok.double_val);
           break;
         default:
           break;
@@ -37,7 +35,7 @@ static void parse_start(FILE *in, const char *filename) {
     PRINT_EXCEPTION();
     exit(1);
   }
-  fprint_string_pool(stdout, pool);
+  fprint_string_pool(stdout, cont);
 }
 
 int main(int argc, char *argv[]) {

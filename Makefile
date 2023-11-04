@@ -1,75 +1,44 @@
-# all: kuicc_program.s clan_program.s clang_opt_program.s
 CC = clang
 CFLAGS = -O0 -g3 -std=c11 -Wall -Wextra -Werror -Wpedantic -Wno-unused-parameter -fsanitize=address,undefined -fno-omit-frame-pointer
 # all: clang_program.s clang_opt_program.s
 
-all: run golden/prog1_trace.txt golden/prog2_parse.txt golden/one_plus_two_parse.txt golden/one_plus_two_ast.txt golden/prog2_ast.txt golden/floating_expr_ast.txt golden/floating_expr_parse.txt
+# all: run golden/prog1_trace.txt golden/prog2_parse.txt golden/one_plus_two_parse.txt golden/one_plus_two_ast.txt golden/prog2_ast.txt golden/floating_expr_ast.txt golden/floating_expr_parse.txt
+all: \
+	main \
+	golden/prog1_trace.txt \
+	run_arrays \
+	run_int_func \
+	run_one_plus_two \
+	run_structs	
 
-golden/one_plus_two_parse.txt: parser_driver golden/one_plus_two.c
+golden/prog1_trace.txt: lexer_main golden/prog1.c
 	rm -f $@
-	./parser_driver -v ssa golden/one_plus_two.c 2>/dev/null > $@
+	./lexer_main golden/prog1.c 2>/dev/null > $@
 	git --no-pager diff --color-words $@
 
-golden/prog2_parse.txt: parser_driver golden/prog2.c
-	rm -f $@
-	./parser_driver -v ssa golden/prog2.c  2>/dev/null > $@
+golden/%.s: golden/%.c main
+	./main -o $@ $< 2>/dev/null
 	git --no-pager diff --color-words $@
 
-golden/one_plus_two_ast.txt: parser_driver golden/one_plus_two.c
-	rm -f $@
-	./parser_driver -v ast golden/one_plus_two.c 2>/dev/null > $@
-	git --no-pager diff --color-words $@
+%_driver: golden/%_driver.c golden/%.s
+	$(CC) -o $@ $^
 
-golden/floating_expr_ast.txt: parser_driver golden/floating_expr.c
-	rm -f $@
-	./parser_driver -v ast golden/floating_expr.c 2>/dev/null > $@
-	git --no-pager diff --color-words $@
+%_driver_clang: golden/%_driver.c golden/%.c
+	$(CC) -o $@ $^
 
-golden/floating_expr_parse.txt: parser_driver golden/floating_expr.c
-	rm -f $@
-	./parser_driver -v ssa golden/floating_expr.c 2>/dev/null > $@
-	git --no-pager diff --color-words $@
+run_%: %_driver %_driver_clang
+	echo "KUI'S RESULT"
+	./$<
+	echo "CLANG'S RESULT"
+	./$(word 2,$^)
 
-golden/prog2_ast.txt: parser_driver golden/prog2.c
-	rm -f $@
-	./parser_driver -v ast golden/prog2.c  2>/dev/null > $@
-	git --no-pager diff --color-words $@
+main: main.c x86_64_visitor.o common.o parser.o lexer.o types_impl.o
 
-golden/prog1_trace.txt: lexer_driver golden/prog1.c
-	rm -f $@
-	./lexer_driver golden/prog1.c 2>/dev/null > $@
-	git --no-pager diff --color-words $@
+lexer_main: lexer_main.c lexer.o common.o
 
-golden/one_plus_two.s: parser_driver golden/one_plus_two.c
-	rm -f $@
-	./parser_driver -v x86_64 -o golden/one_plus_two.s golden/one_plus_two.c
-	git --no-pager diff --color-words $@
+types_impl.o: types_impl.c common.h
 
-golden/declarations.s: parser_driver golden/declarations.c
-	rm -f $@
-	./parser_driver -v ssa -o golden/declarations.s golden/declarations.c
-	git --no-pager diff --color-words $@
-
-driver: driver.c golden/one_plus_two.s
-	clang -o $@ driver.c golden/one_plus_two.s
-
-driver_clang: driver.c golden/one_plus_two_clang.s
-	clang -o $@ driver.c golden/one_plus_two_clang.s
-
-run: driver driver_clang
-	./driver
-	./driver_clang
-
-# TODO: When we can compile functions, remove the header
-golden/one_plus_two_clang.s: golden/one_plus_two.c
-	echo "long long f() { return" > tmp/t1.c
-	cat golden/one_plus_two.c >> tmp/t1.c
-	echo "; }" >> tmp/t1.c
-	clang -O0 -S tmp/t1.c -o $@
-
-parser_driver: parser_driver.c x86_64_visitor.o lexer.o common.o
-
-lexer_driver: lexer_driver.c lexer.o common.o
+parser.o: parser.c common.h
 
 x86_64_visitor.o: x86_64_visitor.c common.h
 
@@ -77,29 +46,37 @@ lexer.o: lexer.c common.h
 
 common.o: common.c common.h
 
-# gen_tokens: gen_tokens.c common.h
-# 	$(CC) $(CFLAGS) $< -o $@
+# golden/one_plus_two_parse.txt: main golden/one_plus_two.c
+# 	rm -f $@
+# 	./main -v ssa golden/one_plus_two.c 2>/dev/null > $@
+# 	git --no-pager diff --color-words $@
 
-# kuicc: kuicc.c
-# 	$(CC) $(CFLAGS) $< -o $@
+# golden/prog2_parse.txt: main golden/prog2.c
+# 	rm -f $@
+# 	./main -v ssa golden/prog2.c  2>/dev/null > $@
+# 	git --no-pager diff --color-words $@
 
-# driver: kuicc_program.s driver.c
-# 	clang kuicc_program.s driver.c
+# golden/one_plus_two_ast.txt: main golden/one_plus_two.c
+# 	rm -f $@
+# 	./main -v ast golden/one_plus_two.c 2>/dev/null > $@
+# 	git --no-pager diff --color-words $@
 
-# driver: clang_program.s driver.c
-# 	clang clang_program.s driver.c -o driver
+# golden/floating_expr_ast.txt: main golden/floating_expr.c
+# 	rm -f $@
+# 	./main -v ast golden/floating_expr.c 2>/dev/null > $@
+# 	git --no-pager diff --color-words $@
 
-# program.s: kuicc program.c
-# 	./kuicc < program.c > program.s
+# golden/floating_expr_parse.txt: main golden/floating_expr.c
+# 	rm -f $@
+# 	./main -v ssa golden/floating_expr.c 2>/dev/null > $@
+# 	git --no-pager diff --color-words $@
 
-# clang_program.s: program.c
-# 	clang -S program.c -o clang_program.s
-
-# clang_opt_program.s: program.c
-# 	clang -O3 -S program.c -o clang_opt_program.s
-
+# golden/prog2_ast.txt: main golden/prog2.c
+# 	rm -f $@
+# 	./main -v ast golden/prog2.c  2>/dev/null > $@
+# 	git --no-pager diff --color-words $@
 
 .PHONY: clean run
 clean:
-	rm -rf *.i *.s *.o *.gch *.dSYM *driver driver_clang kuicc a.out golden/*.s
+	rm -rf *.i *.s *.o *.gch *.dSYM *driver* a.out golden/*.s
 

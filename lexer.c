@@ -7,6 +7,7 @@
 #include <ctype.h>
 
 #include "common.h"
+#include "vendor/klib/khash.h"
 
 // helper macros
 // WARNING: Who sorts? If sorts change the order of any of the arrays above, we fail.
@@ -61,6 +62,12 @@ void init_lexer_module() {
   fill_lens(KEYWORD_VALUES);
 }
 
+KHASH_MAP_INIT_STR(string, int)
+typedef struct {
+  DECLARE_VECTOR(const char *, string_val)
+  khash_t(string) *string_id;
+} StringPool;
+
 StringPool *new_string_pool() {
   StringPool *ret = checked_calloc(1, sizeof(StringPool));
   NEW_VECTOR(ret->string_val, sizeof(char *));
@@ -68,15 +75,25 @@ StringPool *new_string_pool() {
   return ret;
 }
 
-void fprint_string_pool(FILE *f, StringPool *pool) {
-  fprintf(f, "string pool:\n");
-  for (int i = 0; i < pool->string_val_size; i++) {
-    fprintf(f, "  %d: %s\n", i, pool->string_val[i]);
-  }
-}
+typedef struct ScannerCont {
+  // static
+  const char *filename;
+  const char *buf;
+  int size;
+  // dynamic
+  int pos;
+  int line;
+  int col;
+  // saved at the start of a parse
+  int saved_pos;
+  int saved_line;
+  int saved_col;
+  StringPool *string_pool;
+} ScannerCont;
 
-ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *string_pool) {
-  ScannerCont cont = {
+ScannerCont *new_scanner_cont(FILE *in, const char *filename) {
+  ScannerCont *cont = checked_calloc(1, sizeof(*cont));
+  *cont = (ScannerCont) {
     .filename = filename,
     .pos = 0,
     .line = 0,
@@ -84,20 +101,27 @@ ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *string
     .saved_pos = -1,
     .saved_line = -1,
     .saved_col = -1,
-    .string_pool = string_pool,
+    .string_pool = new_string_pool(),
   };
   DIE_IF(fseek(in, 0, SEEK_END) == -1, "seek end");
-  cont.size = ftell(in);
-  DIE_IF(cont.size == -1, "ftell");
-  char *buf = malloc(cont.size + 2);
+  cont->size = ftell(in);
+  DIE_IF(cont->size == -1, "ftell");
+  char *buf = malloc(cont->size + 2);
   DIE_IF(buf == 0, "malloc failed");
   DIE_IF(fseek(in, 0, SEEK_SET) == -1, "seek begin");
-  DIE_IF(fread((char *) buf, 1, cont.size, in) < (size_t) cont.size, "fread did not read enough characters");
+  DIE_IF(fread((char *) buf, 1, cont->size, in) < (size_t) cont->size, "fread did not read enough characters");
   // add another NULL byte to enable two characters of readahead; useful for detecting comments
-  buf[cont.size] = '\0';
-  buf[cont.size + 1] = '\0';
-  cont.buf = buf;
+  buf[cont->size] = '\0';
+  buf[cont->size + 1] = '\0';
+  cont->buf = buf;
   return cont;
+}
+
+void fprint_string_pool(FILE *f, ScannerCont *cont) {
+  fprintf(f, "string pool:\n");
+  for (int i = 0; i < cont->string_pool->string_val_size; i++) {
+    fprintf(f, "  %d: %s\n", i, cont->string_pool->string_val[i]);
+  }
 }
 
 #define DEFINE_INTERN_GENERIC(name, storage_type) \
@@ -110,8 +134,8 @@ ScannerCont make_scanner_cont(FILE *in, const char *filename, StringPool *string
     int ret; \
     k = kh_put(name, h, val, &ret); /* add the key */ \
     THROW_IF(ret == -1, EXC_SYSTEM, "kh_put failed"); \
-    int id = VECTOR_SIZE(pool->name##_val); \
     APPEND_VECTOR(pool->name##_val, val); \
+    int id = VECTOR_SIZE(pool->name##_val); \
     kh_val(h, k) = id; \
     return id; \
   }
@@ -276,6 +300,7 @@ label_start:
     int id = intern_string(cont->string_pool, s);
     Token ret = make_partial_token(cont, TOK_STRING_LITERAL);
     ret.string_id = id;
+    ret.string_val = s;
     return ret;
   }
   if (
@@ -345,8 +370,7 @@ label_start:
     int id = intern_string(cont->string_pool, name);
     Token ret = make_partial_token(cont, TOK_IDENT);
     ret.string_id = id;
-    ret.identifier_name = name;
-    fprintf(stderr, "lexer: scanned identifier %s, id = %d\n", name, id);
+    ret.string_val = name;
     return ret;
   }
 label_error:

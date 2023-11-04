@@ -1,23 +1,20 @@
-# COMPILED BY KUI AND NOT CLANG!
+# KUI'S COMPILER at Thu Nov  2 21:01:17 2023
 	.globl	_f
 _f:
 	pushq	%rbp
 	movq	%rsp, %rbp
-	pushq	$1			# at %rsp = -8(%rbp)
-	pushq	$2			# at %rsp = -16(%rbp)
-	movq	-8(%rbp), %rax
-	addq	-16(%rbp), %rax
-	pushq	%rax			# at %rsp = -24(%rbp)
-
-	pushq	$3			# at %rsp = -32(%rbp)
-	movq	-24(%rbp), %rax
-	addq	-32(%rbp), %rax
-	pushq	%rax			# at %rsp = -40(%rbp)
-
-	pushq	$4			# at %rsp = -48(%rbp)
-	movq	-40(%rbp), %rax
-	subq	-48(%rbp), %rax
-	pushq	%rax			# at %rsp = -56(%rbp)
-
+# golden/one_plus_two.c:2
+	movl	$1, %eax		# %eax = $1
+	addl	$2, %eax		# %eax = $1 + $2
+	subq	$4, %rsp		# alloc t1 (4 bytes) at -4(%rbp) 
+	movl	%eax, -4(%rbp)		# t1 <-4(%rbp)> = %eax
+	addl	$3, %eax		# %eax = t1 + $3
+	subq	$4, %rsp		# alloc t2 (4 bytes) at -8(%rbp) 
+	movl	%eax, -8(%rbp)		# t2 <-8(%rbp)> = %eax
+	subl	$4, %eax		# %eax = t2 - $4
+	subq	$4, %rsp		# alloc t3 (4 bytes) at -12(%rbp) 
+	movl	%eax, -12(%rbp)		# t3 <-12(%rbp)> = %eax
+	leave
+	retq
 	leave
 	retq
